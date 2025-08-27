@@ -1,16 +1,16 @@
 /**
- * bonds_full_update.gs
- * Полное обновление листа «Bonds» с кэшированием купонов/карточек,
- * уникальными заголовками и фиксами формул.
+ * bonds_update.gs
+ * Лист «Bonds»: заголовки, полное обновление, формулы (включая Риск по Rules), обновление только цен.
  */
 
-// ===== УНИКАЛЬНЫЕ заголовки: два риска — ручной и «подтягиваемый» из API =====
+const BONDS_SHEET = 'Bonds';
+
+// ===== УНИКАЛЬНЫЕ заголовки (без смайлика; тип инструмента перенесён в конец) =====
 const BONDS_HEADERS = [
   // Блок 1 — приоритетные
-  '📌 Риск (ручн.)',          // числовой, ручной скоринг 0..N
+  'Риск (ручн.)',            // числовой скоринг по Rules
   'Комментарий ИИ',
   'Комментарий пользователя',
-  'Тип инструмента',
   'FIGI',
   'Название',
   'Кол-во',
@@ -21,7 +21,7 @@ const BONDS_HEADERS = [
   'купон/год',
   'Тип купона (desc)',
   'Сектор',
-  'Риск (уровень TCS)',       // текстовый, из API (mapRiskLevel_)
+  'Риск (уровень TCS)',
 
   // Блок 2 — расчётные
   'Инвестировано',
@@ -41,20 +41,18 @@ const BONDS_HEADERS = [
   'Лот',
   'Биржевой класс',
   'Класс риска TCS',
-  'Время цены (PriceTime)'
+  'Время цены (PriceTime)',
+  'Тип инструмента'          // перенесено в конец; везде «Облигация»
 ];
 
 function updateBondsFull() {
   var figis = readInputFigis_();
-  if (!figis.length) {
-    SpreadsheetApp.getActive().toast('Input пуст: нет FIGI', 'Bonds • Full', 5);
-    return;
-  }
+  if (!figis.length) { showSnack_('Input пуст: нет FIGI','Bonds • Full',2500); return; }
 
-  var bondsInfo  = fetchBondsInfo_(figis);        // профиль облигации (BondBy, кэш)
-  var mdMap      = fetchBondsMarketData_(figis);  // цены/время/НКД
-  var couponsMap = fetchBondsNextCoupons_(figis); // купонные события (кэш)
-  var portfolio  = safeFetchAllPortfolios_();     // qty/avg по FIGI на аккаунт
+  var bondsInfo  = fetchBondsInfo_(figis);
+  var mdMap      = fetchBondsMarketData_(figis);
+  var couponsMap = fetchBondsNextCoupons_(figis);
+  var portfolio  = safeFetchAllPortfolios_();
 
   var rows = [];
   figis.forEach(function (figi) {
@@ -69,7 +67,7 @@ function updateBondsFull() {
 
     var couponTypeDesc = cpn.couponType ? mapCouponType_(cpn.couponType) : (bi.couponTypeDesc || '');
 
-    // Достроить ставку/купон при недостающих полях
+    // Достроить ставку/купон
     if ((bi.couponRate == null || bi.couponRate === '') &&
         (bi.couponValue != null && bi.couponsPerYear != null && bi.nominal)) {
       bi.couponRate = (Number(bi.couponValue) * Number(bi.couponsPerYear) / Number(bi.nominal)) * 100;
@@ -81,17 +79,16 @@ function updateBondsFull() {
 
     var lastPriceAdj = bondPricePctToCurrency_(md.lastPrice, bi.nominal);
 
-    var posArr = portfolio[figi] || [null]; // одна строка на аккаунт (если есть позиции)
+    var posArr = portfolio[figi] || [null];
     posArr.forEach(function (pos) {
       var qty    = pos ? pos.qty : '';
       var avgRaw = pos ? (pos.avg != null ? pos.avg : (pos.avg_fifo != null ? pos.avg_fifo : null)) : null;
       var avgAdj = bondPricePctToCurrency_(avgRaw, bi.nominal);
 
       rows.push([
-        '',                                      // 📌 Риск (ручн.)
+        '',                                      // Риск (ручн.) — формула поставится ниже
         '',                                      // Комментарий ИИ
         '',                                      // Комментарий пользователя
-        'Облигация',                             // Тип инструмента
         figi,                                    // FIGI
         bi.name || '',                           // Название
         qty,                                     // Кол-во
@@ -100,7 +97,7 @@ function updateBondsFull() {
         (bi.couponRate != null ? bi.couponRate : ''),   // Купон, %
         (bi.couponValue != null ? bi.couponValue : ''), // Размер купона
         (bi.couponsPerYear != null ? bi.couponsPerYear : ''), // купон/год
-        (couponTypeDesc || ''),                  // Тип купона (desc)
+        (couponTypeDesc || ''),                  // Тип купона
         (bi.sector || ''),                       // Сектор
         (bi.riskLevelDesc || ''),                // Риск (уровень TCS)
 
@@ -116,23 +113,25 @@ function updateBondsFull() {
         (bi.lot || ''),                          // Лот
         (bi.classCode || ''),                    // Биржевой класс
         (bi.riskClass || ''),                    // Класс риска TCS (raw)
-        (md.lastTime || '')                      // Время цены
+        (md.lastTime || ''),                     // Время цены
+        'Облигация'                              // Тип инструмента (служебный)
       ]);
     });
   });
 
-  var sh = getOrCreateSheet_('Bonds');
+  var sh = getOrCreateSheet_(BONDS_SHEET);
   sh.clear();
   sh.getRange(1, 1, 1, BONDS_HEADERS.length).setValues([BONDS_HEADERS]);
   if (rows.length) {
     sh.getRange(2, 1, rows.length, BONDS_HEADERS.length).setValues(rows);
-    applyFormulas_(sh, 2, rows.length);
+    applyFormulas_(sh, 2, rows.length);        // все формулы, включая Риск (ручн.)
   }
   sh.autoResizeColumns(1, BONDS_HEADERS.length);
   sh.setFrozenRows(1);
+  showSnack_('Обновление листа завершено','Bonds • Full',2000);
 }
 
-/** ===================== FETCHERS (используют API-обёртки) ==================== */
+/** ===================== FETCHERS ==================== */
 function fetchBondsInfo_(figis) {
   var out = {};
   figis.forEach(function (figi) {
@@ -168,7 +167,6 @@ function fetchBondsInfo_(figis) {
   });
   return out;
 }
-
 function fetchBondsNextCoupons_(figis) {
   var now = new Date();
   var fromIso = new Date(now.getTime() - 30*24*3600*1000).toISOString();
@@ -206,11 +204,10 @@ function fetchBondsNextCoupons_(figis) {
           couponsPerYearFromEvent: cps
         };
       }
-    } catch (e) { /* пропускаем конкретный FIGI */ }
+    } catch (e) { /* skip */ }
   });
   return map;
 }
-
 function fetchBondsMarketData_(figis) {
   var out = {};
   var last = callMarketLastPrices_(figis);
@@ -226,7 +223,6 @@ function fetchBondsMarketData_(figis) {
   });
   return out;
 }
-
 function safeFetchAllPortfolios_() {
   try {
     var accounts = callUsersGetAccounts_();
@@ -261,13 +257,16 @@ function safeFetchAllPortfolios_() {
   } catch (e) { return {}; }
 }
 
-/** =================== Формулы (локаль-aware, ROUND до 2 знаков) =================== */
+// =================== Формулы (локаль-aware, ROUND; вкл. Риск по Rules) ===================
 function applyFormulas_(sh, startRow, numRows) {
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   function idx(title) { return headers.indexOf(title) + 1; }
   var locale = SpreadsheetApp.getActive().getSpreadsheetLocale()||'';
   var SEP = (/^ru|^uk|^pl|^de|^fr|^it/i.test(locale)) ? ';' : ',';
 
+  var cRisk  = idx('Риск (ручн.)');
+  var cFIGI  = idx('FIGI');
+  var cName  = idx('Название');
   var cQty   = idx('Кол-во');
   var cAvg   = idx('Средняя цена');
   var cPrice = idx('Текущая цена');
@@ -280,6 +279,9 @@ function applyFormulas_(sh, startRow, numRows) {
   var cCupVal = idx('Размер купона');
   var cCupPY  = idx('купон/год');
   var cYield  = idx('Доходность купонная годовая (прибл.)');
+
+  var cSector = idx('Сектор');
+  var cMat    = idx('Дата погашения');
 
   function d(from, to){ return from - to; }
   var R2 = function(expr){ return 'ROUND(' + expr + SEP + '2)'; };
@@ -301,21 +303,39 @@ function applyFormulas_(sh, startRow, numRows) {
     .setFormulaR1C1('=IF(OR(LEN(RC['+d(cInv,cPLPct)+'])=0'+SEP+'RC['+d(cInv,cPLPct)+']=0'+SEP+'LEN(RC['+d(cPL,cPLPct)+'])=0)'+SEP+'""'+SEP+ R2('(RC['+d(cPL,cPLPct)+']/RC['+d(cInv,cPLPct)+'])*100') +')');
 
   // Доходность купонная годовая (прибл.) = (РазмерКупона * купон/год) / Цена * 100
-  // (ИСПРАВЛЕНО: LEN вместо ЛЕН)
+  // (исправлено: LEN, не «ЛЕН»)
   sh.getRange(startRow, cYield, numRows, 1)
     .setFormulaR1C1('=IF(OR(LEN(RC['+d(cCupVal,cYield)+'])=0'+SEP+'LEN(RC['+d(cCupPY,cYield)+'])=0'+SEP+'LEN(RC['+d(cPrice,cYield)+'])=0'+SEP+'RC['+d(cPrice,cYield)+']=0)'+SEP+'""'+SEP+ R2('(RC['+d(cCupVal,cYield)+']*RC['+d(cCupPY,cYield)+'])/RC['+d(cPrice,cYield)+']*100') +')');
+
+  // === Риск (ручн.) по листу Rules ===
+  // Используются именованные диапазоны:
+  //   RISK_DD  – порог P/L (%) для +1 (например, -3)
+  //   RISK_DUR – порог длительности (лет) до погашения для +1 (например, 3)
+  //   RISK_SECTORS (A:B) – таблица «Сектор → баллы»
+  //
+  // Формула:
+  // = IFERROR(
+  //      IFERROR(VLOOKUP([Сектор], RISK_SECTORS, 2, FALSE), 0)
+  //      + IF(LEN([P/L (%)])=0, 0, IF([P/L (%)] <= RISK_DD, 1, 0))
+  //      + IF(LEN([Дата погашения])=0, 0, IF( (([Дата]-TODAY())/365) >= RISK_DUR, 1, 0)),
+  //   0)
+  var riskFormula = [
+    '=IFERROR(',
+      'IFERROR(VLOOKUP(RC['+d(cSector,cRisk)+'],RISK_SECTORS,2,FALSE),0)',
+      '+IF(LEN(RC['+d(cPLPct,cRisk)+'])=0,0,IF(RC['+d(cPLPct,cRisk)+']<=RISK_DD,1,0))',
+      '+IF(LEN(RC['+d(cMat,cRisk)+'])=0,0,IF(((RC['+d(cMat,cRisk)+']-TODAY())/365)>=RISK_DUR,1,0))',
+    ',0)'
+  ].join('');
+  sh.getRange(startRow, cRisk, numRows, 1).setFormulaR1C1(riskFormula);
 }
 
 /**
- * Обновляет на листе «Bonds» только рыночные поля: Текущая цена/НКД/Время цены.
- * Использует унифицированную конверсию bondPricePctToCurrency_().
+ * Обновляет на листе «Bonds» только рыночные поля и время.
+ * Использует унифицированную конверсию.
  */
 function updateBondPricesOnly() {
   var figis = readInputFigis_();
-  if (!figis.length) {
-    SpreadsheetApp.getActive().toast('Input пуст: нет FIGI', 'Bonds • Prices', 5);
-    return;
-  }
+  if (!figis.length) { showSnack_('Input пуст: нет FIGI','Bonds • Prices',2500); return; }
 
   var mdBy = {};
   (callMarketLastPrices_(figis) || []).forEach(function (x) {
@@ -324,14 +344,12 @@ function updateBondPricesOnly() {
       lastTime:  x.time || ''
     };
   });
-
   figis.forEach(function (f) {
     var aci = callMarketAccruedInterestsToday_(f);
     mdBy[f] = mdBy[f] || {};
     mdBy[f].accrued = (aci != null) ? Number(aci) : null;
   });
 
-  // Получим номиналы (кэш ускорит)
   var nominalBy = {};
   figis.forEach(function (f) {
     try {
@@ -340,14 +358,11 @@ function updateBondPricesOnly() {
         var n = (qToNumber(card.nominal) != null) ? qToNumber(card.nominal) : moneyToNumber(card.nominal);
         if (n != null) nominalBy[f] = Number(n);
       }
-    } catch (e) { /* skip */ }
+    } catch (e) {}
   });
 
-  var sh = SpreadsheetApp.getActive().getSheetByName('Bonds');
-  if (!sh) {
-    SpreadsheetApp.getActive().toast('Лист Bonds ещё не создан (сначала полное обновление).', 'Bonds • Prices', 7);
-    return;
-  }
+  var sh = SpreadsheetApp.getActive().getSheetByName(BONDS_SHEET);
+  if (!sh) { showSnack_('Лист Bonds ещё не создан (сначала полное обновление).','Bonds • Prices',3000); return; }
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   function idx(name){ return headers.indexOf(name) + 1; }
 
@@ -355,10 +370,7 @@ function updateBondPricesOnly() {
   var colPrice = idx('Текущая цена');
   var colACI   = idx('НКД');
   var colTime  = idx('Время цены (PriceTime)');
-  if (!(colFIGI && colPrice && colACI && colTime)) {
-    SpreadsheetApp.getActive().toast('Не найдены нужные колонки FIGI/Текущая/НКД/Время', 'Bonds • Prices', 7);
-    return;
-  }
+  if (!(colFIGI && colPrice && colACI && colTime)) { showSnack_('Не найдены FIGI/Текущая/НКД/Время','Bonds • Prices',3000); return; }
 
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return;
@@ -366,14 +378,11 @@ function updateBondPricesOnly() {
   var figiVals = sh.getRange(2, colFIGI, lastRow - 1, 1).getValues().flat();
 
   var priceArr = [], aciArr = [], timeArr = [];
-
   figiVals.forEach(function (f) {
     var md = mdBy[f] || {};
     var raw = md.lastPrice;
     var nominal = nominalBy[f];
     var priceRub = (raw != null) ? bondPricePctToCurrency_(raw, nominal) : null;
-
-    console.log('FIGI=' + f + ' nominal=' + (nominal||'') + ' raw=' + (raw||'') + ' priceRub=' + (priceRub||''));
 
     priceArr.push([priceRub != null ? priceRub : '']);
     aciArr.push([md.accrued != null ? md.accrued : '']);
@@ -384,321 +393,5 @@ function updateBondPricesOnly() {
   sh.getRange(2, colACI,   aciArr.length,   1).setValues(aciArr);
   sh.getRange(2, colTime,  timeArr.length,  1).setValues(timeArr);
 
-  SpreadsheetApp.getActive().toast('Цены и НКД обновлены', 'Bonds • Prices', 5);
+  showSnack_('Цены и НКД обновлены','Bonds • Prices',2000);
 }
-
-// ====== Dashboard с LockService (новое) ======
-function buildBondsDashboard(){
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) {
-    SpreadsheetApp.getActive().toast('Другая операция обновляет Dashboard. Повторите позже.', 'Dashboard', 5);
-    return;
-  }
-  try {
-    var ss = SpreadsheetApp.getActive();
-    var src = ss.getSheetByName('Bonds');
-    if(!src){ SpreadsheetApp.getActive().toast('Лист Bonds не найден', 'Dashboard', 5); return; }
-
-    var dst = ss.getSheetByName('Dashboard') || ss.insertSheet('Dashboard');
-    dst.clear();
-
-    // --- Индексы колонок по заголовкам ---
-    var hdr = src.getRange(1,1,1,src.getLastColumn()).getValues()[0];
-    function idx(name){ var i = hdr.indexOf(name); return (i>=0)? (i+1) : 0; }
-
-    var cName    = idx('Название');
-    var cFIGI    = idx('FIGI');
-    var cRiskNum = idx('📌 Риск (ручн.)');      // ручной риск
-    var cSector  = idx('Сектор');
-    var cQty     = idx('Кол-во');
-    var cPrice   = idx('Текущая цена');
-    var cNominal = idx('Номинал');
-    var cCupPY   = idx('купон/год');
-    var cCupVal  = idx('Размер купона');
-    var cMaturity= idx('Дата погашения');
-    var cNextCp  = idx('Следующий купон');
-
-    var cMkt     = idx('Рыночная стоимость');
-    var cInv     = idx('Инвестировано');
-    var cPL      = idx('P/L (руб)');
-    var cPLPct   = idx('P/L (%)');
-
-    if(!(cRiskNum && cSector && cMkt && cInv && cPL && cPLPct && cPrice)){
-      SpreadsheetApp.getActive().toast('Не хватает обязательных колонок (📌 Риск (ручн.)/Сектор/Рыночная/…)', 'Dashboard', 7);
-      return;
-    }
-
-    var lastRow = src.getLastRow();
-    if(lastRow < 2){ SpreadsheetApp.getActive().toast('Нет данных для сводки', 'Dashboard', 5); return; }
-
-    var rows = src.getRange(2,1,lastRow-1,src.getLastColumn()).getValues();
-
-    // --- Агрегации ---
-    var invested = 0, market = 0, plRub = 0;
-    var sectors = {};                       // {sector: sumMarket}
-    var riskCnt = { 'Низкий':0, 'Средний':0, 'Высокий':0 }; // 0–1, 2–4, 5+
-    var wCouponNum = 0, wCouponDen = 0;
-
-    // YTM: средневзвешенное по рыночной стоимости (приближённо)
-    var wYtmNum = 0, wYtmDen = 0;
-    var scatterRiskYield = [['Риск','YTM (%)','Тултип']];
-
-    // Купоны по месяцам (горизонт 6 месяцев)
-    var monthAgg = {};
-    var today = new Date();
-    var horizon = addMonths_(today, 6);
-    var strip   = function(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
-    var r2      = function(x){ return Math.round(Number(x||0)*100)/100; };
-
-    rows.forEach(function(r){
-      function val(ci){ return (ci? r[ci-1] : ''); }
-
-      // Риск: бинирование по ручному числу
-      var riskNum = Number(val(cRiskNum));
-      if(!isNaN(riskNum)){
-        if (riskNum <= 1)      riskCnt['Низкий']++;
-        else if (riskNum <= 4) riskCnt['Средний']++;
-        else                   riskCnt['Высокий']++;
-      }
-
-      var sec = String(val(cSector) || 'other');
-      var mkt = Number(val(cMkt)) || 0;
-      var inv = Number(val(cInv)) || 0;
-      var pl  = Number(val(cPL))  || 0;
-
-      invested += inv; market += mkt; plRub += pl;
-      sectors[sec] = (sectors[sec]||0) + mkt;
-
-      var coupPctAltIdx = idx('Купон, %');
-      var coupPctAlt = Number(coupPctAltIdx ? val(coupPctAltIdx) : NaN);
-      var coupPctCalc = Number(val(cCupPY) ? (((Number(val(cCupVal))||0) * Number(val(cCupPY))) / (Number(val(cPrice))||0) * 100) : NaN);
-      var coupUse = !isNaN(coupPctAlt) ? coupPctAlt : coupPctCalc;
-      if(!isNaN(coupUse) && mkt>0){ wCouponNum += (coupUse/100)*mkt; wCouponDen += mkt; }
-
-      // --- YTM (приближённо)
-      var price    = Number(val(cPrice));
-      var nominal  = Number(val(cNominal));
-      var cupPY    = Number(val(cCupPY));
-      var cupVal   = Number(val(cCupVal));
-      var matStr   = val(cMaturity);
-      var name     = String(val(cName) || '');
-      var figi     = String(val(cFIGI) || '');
-      var yearsToMat = null;
-
-      if(matStr){
-        var d = (matStr instanceof Date)? matStr : (isNaN(Date.parse(matStr))? null : new Date(Date.parse(matStr)));
-        if(d){ yearsToMat = Math.max(0.25, (strip(d) - strip(today)) / (365*24*3600*1000)); }
-      }
-
-      if(!(nominal>0)) nominal = 1000;
-      var ytmPct = null;
-      if(price>0 && nominal>0 && cupPY>0 && cupVal>=0 && yearsToMat){
-        var C = cupVal * cupPY;
-        ytmPct = ((C + (nominal - price) / yearsToMat) / ((nominal + price) / 2)) * 100;
-        if(isFinite(ytmPct)){
-          if(mkt>0){ wYtmNum += (ytmPct/100)*mkt; wYtmDen += mkt; }
-          if(!isNaN(riskNum)){
-            var tip = name + '\n' + figi + '\nYTM: ' + r2(ytmPct) + '%';
-            scatterRiskYield.push([riskNum, r2(ytmPct), tip]);
-          }
-        } else {
-          ytmPct = null;
-        }
-      }
-
-      // --- купоны по месяцам (6 мес)
-      var qty = Number(val(cQty)) || 0;
-      var nextStr = val(cNextCp);
-      if(qty>0 && cupPY>0 && cupVal>0 && nextStr){
-        var first = (nextStr instanceof Date)? nextStr : (isNaN(Date.parse(nextStr))? null : new Date(Date.parse(nextStr)));
-        if(first){
-          var periodDays = Math.max(15, Math.round(365 / cupPY));
-          var d2 = strip(first);
-          while(d2 <= horizon){
-            if(d2 >= strip(today)){
-              var key = d2.getFullYear() + '-' + ('0'+(d2.getMonth()+1)).slice(-2);
-              monthAgg[key] = (monthAgg[key]||0) + (cupVal * qty);
-            }
-            d2 = addDays_(d2, periodDays);
-          }
-        }
-      }
-    });
-
-    var plPctTotal = invested>0 ? (plRub/invested*100) : 0;
-    var wCouponPct = wCouponDen>0 ? (wCouponNum/wCouponDen*100) : 0;
-    var wYtmPct    = wYtmDen>0    ? (wYtmNum/wYtmDen*100)       : 0;
-
-    // --- KPI блок ---
-    var kpi = [
-      ['Показатель','Значение'],
-      ['Инвестировано', round2_(invested)],
-      ['Рыночная стоимость', round2_(market)],
-      ['P/L (руб)', round2_(plRub)],
-      ['P/L (%)', round2_(plPctTotal)],
-      ['Средневзв. купонная доходность (%)', round2_(wCouponPct)],
-      ['Средневзв. YTM (%)', round2_(wYtmPct)],
-      ['Купоны в 30 дней (шт)', Object.keys(monthAgg).filter(function(k){
-        var y = Number(k.slice(0,4)), m = Number(k.slice(5,7))-1;
-        var d = new Date(y,m,1); return d <= addMonths_(today,1);
-      }).length],
-      ['Купоны в 30 дней (₽)', (function(){
-        var s=0; Object.keys(monthAgg).forEach(function(k){
-          var y = Number(k.slice(0,4)), m = Number(k.slice(5,7))-1;
-          var d = new Date(y,m,1); if(d <= addMonths_(today,1)) s += monthAgg[k];
-        }); return round2_(s);
-      })()]
-    ];
-    dst.getRange(1,1,kpi.length,2).setValues(kpi);
-    dst.getRange(1,1,1,2).setFontWeight('bold');
-
-    // --- Таблица по рискам ---
-    var riskTable = [
-      ['Категория риска','Кол-во'],
-      ['Низкий',  riskCnt['Низкий']],
-      ['Средний', riskCnt['Средний']],
-      ['Высокий', riskCnt['Высокий']]
-    ];
-    dst.getRange(1,4,riskTable.length,riskTable[0].length).setValues(riskTable).setFontWeight('bold');
-
-    // --- Таблица по секторам ---
-    var secArr = Object.keys(sectors).sort().map(function(s){ return [s, round2_(sectors[s])]; });
-    dst.getRange(1,7,1,2).setValues([['Сектор','Рыночная стоимость']]).setFontWeight('bold');
-    if(secArr.length) dst.getRange(2,7,secArr.length,2).setValues(secArr);
-
-    // --- Таблица по годам погашения ---
-    var cMaturity2 = cMaturity;
-    var byYear = {};
-    if(cMaturity2){
-      rows.forEach(function(r){
-        var mkt = Number(r[cMkt-1])||0;
-        var v = r[cMaturity2-1];
-        if(v){
-          var d = (v instanceof Date)? v : (isNaN(Date.parse(v))? null : new Date(Date.parse(v)));
-          if(d){ var y = d.getFullYear(); byYear[y] = (byYear[y]||0) + mkt; }
-        }
-      });
-    }
-    var years = Object.keys(byYear).sort();
-    dst.getRange(1,10,1,2).setValues([['Год погашения','Рыночная стоимость']]).setFontWeight('bold');
-    if(years.length){
-      var yrArr = years.map(function(y){ return [Number(y), round2_(byYear[y])]; });
-      dst.getRange(2,10,yrArr.length,2).setValues(yrArr);
-    }
-
-    // --- Таблица купонов по месяцам ---
-    var monthsSorted = Object.keys(monthAgg).sort();
-    dst.getRange(1,13,1,2).setValues([['Месяц','Купоны (₽)']]).setFontWeight('bold');
-    if(monthsSorted.length){
-      var monArr = monthsSorted.map(function(k){ return [k, round2_(monthAgg[k])]; });
-      dst.getRange(2,13,monArr.length,2).setValues(monArr);
-    }
-
-    // Очистить старые диаграммы
-    dst.getCharts().forEach(function(ch){ dst.removeChart(ch); });
-
-    // Палитры
-    var paletteMain = ['#4F46E5','#22C55E','#EAB308','#EF4444','#06B6D4','#A855F7','#F59E0B','#94A3B8','#10B981','#3B82F6'];
-    var paletteRisk = ['#10B981','#EAB308','#EF4444'];
-
-    // Диаграмма: Риски
-    var riskRange = dst.getRange(1,4,4,2);
-    var riskChart = dst.newChart()
-      .setChartType(Charts.ChartType.COLUMN)
-      .addRange(riskRange)
-      .setPosition(1, 16, 0, 0)
-      .setOption('title','Распределение по рискам (шт.)')
-      .setOption('legend', { position: 'none' })
-      .setOption('colors', [paletteRisk[0]])
-      .build();
-    dst.insertChart(riskChart);
-
-    // Диаграмма: Сектора
-    if(secArr.length){
-      var secRange = dst.getRange(1,7,Math.max(2,secArr.length+1),2);
-      var pie = dst.newChart()
-        .setChartType(Charts.ChartType.PIE)
-        .addRange(secRange)
-        .setPosition(20, 1, 0, 0)
-        .setOption('title','Структура по секторам (рыночная стоимость)')
-        .setOption('legend', { position: 'right' })
-        .setOption('pieSliceText', 'percentage')
-        .setOption('colors', paletteMain.slice(0, Math.max(3, secArr.length)))
-        .build();
-      dst.insertChart(pie);
-    }
-
-    // Диаграмма: Погашения по годам
-    if(years.length){
-      var yrRange = dst.getRange(1,10,Math.max(2,years.length+1),2);
-      var matChart = dst.newChart()
-        .setChartType(Charts.ChartType.COLUMN)
-        .addRange(yrRange)
-        .setPosition(20, 7, 0, 0)
-        .setOption('title','Сроки погашения (рыночная стоимость)')
-        .setOption('legend', { position: 'none' })
-        .setOption('colors', ['#3B82F6'])
-        .build();
-      dst.insertChart(matChart);
-    }
-
-    // Диаграмма: Купоны по месяцам
-    if(monthsSorted.length){
-      var monRange = dst.getRange(1,13,Math.max(2,monthsSorted.length+1),2);
-      var monChart = dst.newChart()
-        .setChartType(Charts.ChartType.COLUMN)
-        .addRange(monRange)
-        .setPosition(20, 13, 0, 0)
-        .setOption('title','График купонных выплат (6 месяцев)')
-        .setOption('legend', { position: 'none' })
-        .setOption('colors', ['#22C55E'])
-        .build();
-      dst.insertChart(monChart);
-    }
-
-    // Диаграмма: YTM vs Купонная доходность
-    var cmpStartRow = Math.max(22, 20 + Math.max(years.length, monthsSorted.length) + 2);
-    var cmpData = [
-      ['Метрика','Значение'],
-      ['Средневзв. YTM (%)', round2_(wYtmPct)],
-      ['Купонная доходность (%)', round2_(wCouponPct)]
-    ];
-    dst.getRange(cmpStartRow, 1, cmpData.length, 2).setValues(cmpData).setFontWeight('bold');
-    var cmpRange = dst.getRange(cmpStartRow, 1, cmpData.length, 2);
-    var cmpChart = dst.newChart()
-      .setChartType(Charts.ChartType.COLUMN)
-      .addRange(cmpRange)
-      .setPosition(cmpStartRow, 4, 0, 0)
-      .setOption('title','YTM vs Купонная доходность (средневзв., %)')
-      .setOption('legend', { position: 'none' })
-      .setOption('colors', ['#4F46E5'])
-      .build();
-    dst.insertChart(cmpChart);
-
-    // Диаграмма: Риск vs YTM (scatter)
-    if(scatterRiskYield.length > 1){
-      dst.getRange(cmpStartRow, 7, scatterRiskYield.length, 3).setValues(scatterRiskYield).setFontWeight('bold');
-      var scRange = dst.getRange(cmpStartRow, 7, scatterRiskYield.length, 3);
-      var scChart = dst.newChart()
-        .setChartType(Charts.ChartType.SCATTER)
-        .addRange(scRange)
-        .setPosition(cmpStartRow, 11, 0, 0)
-        .setOption('title','Риск vs Доходность к погашению (YTM)')
-        .setOption('legend', { position: 'none' })
-        .setOption('hAxis', { title: 'Риск (баллы)' })
-        .setOption('vAxis', { title: 'YTM (%)' })
-        .setOption('series', { 0: { pointSize: 5 } })
-        .build();
-      dst.insertChart(scChart);
-    }
-
-    dst.autoResizeColumns(1, 20);
-    SpreadsheetApp.getActive().toast('Dashboard обновлён: кэш, фикс формул и лок-синхронизация', 'Dashboard', 4);
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-/** helpers */
-function addDays_(d, n){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()+n); }
-function addMonths_(d, n){ return new Date(d.getFullYear(), d.getMonth()+n, 1); }
