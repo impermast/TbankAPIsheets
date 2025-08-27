@@ -46,8 +46,8 @@ const BONDS_HEADERS = [
 ];
 
 function updateBondsFull() {
-  var figis = readInputFigis_();
-  if (!figis.length) { showSnack_('Input пуст: нет FIGI','Bonds • Full',2500); return; }
+  var figis = readInputFigisByType_('bond');
+  if (!figis.length) { showSnack_('Input пуст: нет FIGI в колонке Облигации','Bonds',2500); return; }
 
   var bondsInfo  = fetchBondsInfo_(figis);
   var mdMap      = fetchBondsMarketData_(figis);
@@ -358,7 +358,7 @@ sh.getRange(startRow, cRisk, numRows, 1).setFormulas(formulas);
  * Использует унифицированную конверсию.
  */
 function updateBondPricesOnly() {
-  var figis = readInputFigis_();
+  var figis = readInputFigisByType_('bond');
   if (!figis.length) { showSnack_('Input пуст: нет FIGI','Bonds • Prices',2500); return; }
 
   var mdBy = {};
