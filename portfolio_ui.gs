@@ -1,6 +1,33 @@
-/** portfolio_ui.gs — отладочные панели и загрузка FIGI, купонная карточка */
+/**
+ * portfolio_ui.gs
+ * Вспомогательные UI: нижние «снэки», списки аккаунтов, загрузка FIGI, купон по FIGI и debug.
+ */
 
-function htmlEscape_(s){ s=(s==null)?'':String(s); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+
+/** Показывает текст в штатной плашке “Выполняется скрипт …”.
+ *  title — что именно показать в плашке.
+ *  autoCloseSec — через сколько секунд закрыть (необязательно; если не задано — висит, пока скрипт не завершится/не перезапишется новым вызовом).
+ */
+function setStatus_(title, autoCloseSec){
+  var safe = (title && String(title).trim()) ? String(title).trim() : 'Выполняется скрипт';
+  var html = HtmlService.createHtmlOutput(
+    // мини-контейнер + опциональное автозакрытие
+    '<div style="width:1px;height:1px;"></div>' +
+    (autoCloseSec ? '<script>setTimeout(function(){google.script.host.close()},'+(autoCloseSec*1000)+');</script>' : '')
+  ).setWidth(1).setHeight(1);
+  // важное: НЕ пустой title, иначе ошибка
+  SpreadsheetApp.getUi().showModalDialog(html, safe);
+}
+
+/** Алиас на setStatus_: вместо своих “снеков” просто пишем статус в плашку. */
+function showSnack_(message, title, ms){
+  // Склеиваем: "Заголовок • Сообщение" или просто Сообщение
+  var txt = title ? (String(title).trim() + ' • ' + String(message||'')) : String(message||'');
+  setStatus_(txt, ms ? Math.ceil(ms/1000) : null);
+}
+
+
 function showPanel_(title, html){
   var out = HtmlService.createHtmlOutput(
     '<div style="font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;padding:12px;">' +
@@ -12,6 +39,7 @@ function showPanel_(title, html){
   SpreadsheetApp.getUi().showSidebar(out);
 }
 
+// ===== Debug & портфельные утилиты =====
 function debugPortfolioAccess(){
   try{
     var accs=callUsersGetAccounts_();
@@ -19,28 +47,25 @@ function debugPortfolioAccess(){
     var rows=[], totalPos=0, totalQty=0;
     for(var i=0;i<accs.length;i++){
       var a=accs[i];
-      var r1=tinkoffFetch('tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio',{accountId:a.accountId},{allow404:true});
-      var r2=tinkoffFetch('tinkoff.public.invest.api.contract.v1.OperationsService/GetPositions',{accountId:a.accountId},{allow404:true});
+      var r1=tinkoffFetchRaw_('tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio',{accountId:a.accountId});
+      var r2=tinkoffFetchRaw_('tinkoff.public.invest.api.contract.v1.OperationsService/GetPositions',{accountId:a.accountId});
       var cnt=0, qty=0;
-      var p1 = (r1 && r1.positions) || [];
-      var p2 = (r2 && (r2.positions||r2.securities)) || [];
-      cnt += p1.length + p2.length;
-      p1.concat(p2).forEach(function(p){ var q=qToNumber(p.quantity||p.balance); if(q) qty+=Number(q); });
+      if(r1.code===200){ try{ var j1=JSON.parse(r1.text)||{}; var p1=(j1.positions||[]); cnt+=p1.length; for(var k=0;k<p1.length;k++){ var q=qToNumber(p1[k].quantity||p1[k].balance); if(q) qty+=Number(q); } }catch(e){} }
+      if(r2.code===200){ try{ var j2=JSON.parse(r2.text)||{}; var p2=(j2.positions||j2.securities||[]); cnt+=p2.length; for(var m=0;m<p2.length;m++){ var q2=qToNumber(p2[m].quantity||p2[m].balance); if(q2) qty+=Number(q2); } }catch(e){} }
       totalPos+=cnt; totalQty+=qty;
-      rows.push('<tr><td>'+htmlEscape_(a.accountId)+'</td><td>'+htmlEscape_(a.name||'')+'</td><td style="text-align:right">'+cnt+'</td><td style="text-align:right">'+qty+'</td></tr>');
+      rows.push('<tr><td>'+htmlEscape_(a.accountId)+'</td><td>'+htmlEscape_(a.name||'')+'</td><td>'+r1.code+'/'+r2.code+'</td><td style="text-align:right">'+cnt+'</td><td style="text-align:right">'+qty+'</td></tr>');
     }
     var html = '<div style="margin-bottom:8px">Аккаунтов: <b>'+accs.length+
                '</b>, позиций суммарно: <b>'+totalPos+
                '</b>, qty: <b>'+totalQty+'</b></div>'+
                '<table style="border-collapse:collapse;width:100%">'+
-               '<thead><tr><th>AccountId</th><th>Имя</th><th style="text-align:right">Позиций</th><th style="text-align:right">Qty</th></tr></thead>'+
+               '<thead><tr><th>AccountId</th><th>Имя</th><th>HTTP (Portfolio/Positions)</th><th style="text-align:right">Позиций</th><th style="text-align:right">Qty</th></tr></thead>'+
                '<tbody>'+rows.join('')+'</tbody></table>';
     showPanel_('Проверка доступа к портфелю', html);
   }catch(e){
     showPanel_('Проверка доступа — ошибка', '<div>'+htmlEscape_(e && e.message)+'</div>');
   }
 }
-
 function portfolioShowAccounts(){
   try{
     var accs=callUsersGetAccounts_();
@@ -54,7 +79,6 @@ function portfolioShowAccounts(){
     showPanel_('Аккаунты — ошибка', '<div>'+htmlEscape_(e && e.message)+'</div>');
   }
 }
-
 function portfolioShowBalances(){
   try{
     var accs=callUsersGetAccounts_();
@@ -75,7 +99,6 @@ function portfolioShowBalances(){
     showPanel_('Баланс — ошибка', '<div>'+htmlEscape_(e && e.message)+'</div>');
   }
 }
-
 function portfolioShowPositionsCount(){
   try{
     var accs=callUsersGetAccounts_();
@@ -90,7 +113,7 @@ function portfolioShowPositionsCount(){
       var cnt=Object.keys(s).length; total+=cnt;
       rows.push('<tr><td>'+htmlEscape_(a.accountId)+'</td><td>'+htmlEscape_(a.name||'')+'</td><td style="text-align:right">'+cnt+'</td></tr>');
     }
-    var html = '<div style="margin-bottom:8px">Всего позиций: <b>'+total+'</b></div>'+
+    var html = '<div style="margin-bottom:8px">Всего позиций по всем аккаунтам: <b>'+total+'</b></div>'+
                '<table style="border-collapse:collapse;width:100%"><thead><tr><th>AccountId</th><th>Имя</th><th style="text-align:right">Позиций</th></tr></thead><tbody>'+rows+'</tbody></table>';
     showPanel_('Позиции по аккаунтам', html);
   }catch(e){
@@ -98,13 +121,13 @@ function portfolioShowPositionsCount(){
   }
 }
 
-/** Загрузка FIGI из портфеля в лист Input */
+// Загрузка FIGI из портфеля в Input
 function loadInputFigisFromPortfolio(type){
   var typeMap = { bond: 'Облигации', share: 'Акции', etf: 'Фонды' };
-  if(!typeMap[type]){ notify_('Загрузка FIGI', 'Неизвестный тип: '+type, 5); return; }
+  if(!typeMap[type]){ showSnack_('Неизвестный тип: '+type, 'Загрузка FIGI', 2500); return; }
 
   var accs = callUsersGetAccounts_();
-  if(!accs.length){ notify_('Загрузка FIGI', 'Нет доступа к аккаунтам', 6); return; }
+  if(!accs.length){ showSnack_('Нет доступа к аккаунтам', 'Загрузка FIGI', 3000); return; }
 
   var uniq = {};
   accs.forEach(function(a){
@@ -113,7 +136,7 @@ function loadInputFigisFromPortfolio(type){
     p1.concat(p2).forEach(function(p){ if(p.figi) uniq[p.figi]=1; });
   });
   var allFigis = Object.keys(uniq);
-  if(!allFigis.length){ notify_('Загрузка FIGI', 'В портфеле нет позиций', 5); return; }
+  if(!allFigis.length){ showSnack_('В портфеле нет позиций', 'Загрузка FIGI', 2500); return; }
 
   var matched = [];
   for(var i=0;i<allFigis.length;i++){
@@ -134,82 +157,10 @@ function loadInputFigisFromPortfolio(type){
     sh.getRange(2,1,data.length,1).setValues(data);
   }
   sh.autoResizeColumns(1,1);
-  notify_('Загрузка FIGI', 'Загружено FIGI: '+matched.length+' ('+typeMap[type]+')', 6);
+  showSnack_('Загружено FIGI: '+matched.length+' ('+typeMap[type]+')', 'Загрузка FIGI', 3000);
 }
 
-/** Купонная карточка */
-function getBondCouponSnapshot_(figi){
-  var card = callInstrumentsBondByFigi_(figi);
-  if(!card) throw new Error('FIGI не найден как облигация или нет доступа: '+figi);
-
-  var nominal        = (card.nominal!=null) ? (qToNumber(card.nominal) ?? moneyToNumber(card.nominal)) : null;
-  var couponRate     = (card.couponRate!=null) ? qToNumber(card.couponRate) : null;
-  var couponValue    = (card.couponValue!=null) ? moneyToNumber(card.couponValue) :
-                       (card.couponNominal!=null ? moneyToNumber(card.couponNominal) : null);
-  var couponsPerYear = (card.couponQuantityPerYear!=null) ? Number(card.couponQuantityPerYear) : null;
-  var couponTypeCard = card.couponType;
-  var riskDesc       = mapRiskLevel_(card.riskLevel);
-
-  var now=new Date();
-  var fromIso=new Date(now.getTime()-30*24*3600*1000).toISOString();
-  var toIso  =new Date(now.getTime()+3*365*24*3600*1000).toISOString();
-  var events = callInstrumentsGetBondCouponsCached_(figi, fromIso, toIso) || [];
-  var future=null,lastPast=null;
-  events.forEach(function(c){
-    var dtIso = tsToIso(c.couponDate || c.coupon_date || c.couponDateLt || c.date);
-    if(!dtIso) return;
-    var dt=new Date(dtIso);
-    var val = moneyToNumber(c.payOneBond || c.pay_one_bond || c.couponValue || c.value);
-    var typ = c.couponType || c.coupon_type;
-    var per = (c.couponPeriod!=null?Number(c.couponPeriod):(c.coupon_period!=null?Number(c.coupon_period):null));
-    var num = c.couponNumber || c.coupon_number || null;
-    var fix = tsToIso(c.fixDate || c.fix_date);
-    var rec = {dtIso:dtIso,value:(val!=null?Number(val):null),type:typ,period:per,number:num,fixIso:fix};
-    if(dt.getTime()>=now.getTime()){
-      if(!future || new Date(future.dtIso)>dt) future=rec;
-    } else {
-      if(!lastPast || new Date(lastPast.dtIso)<dt) lastPast=rec;
-    }
-  });
-  var chosen = future || lastPast || null;
-
-  var perYearFromEvent = (chosen && chosen.period && chosen.period>0) ? Math.max(1, Math.round(365/ chosen.period)) : null;
-  if(couponsPerYear==null && perYearFromEvent!=null) couponsPerYear = perYearFromEvent;
-  if(couponValue==null && chosen && chosen.value!=null) couponValue = chosen.value;
-  if(couponRate==null && couponValue!=null && nominal && couponsPerYear){
-    couponRate = (couponValue*couponsPerYear/nominal)*100;
-  }
-  var couponTypeDesc = mapCouponType_((chosen && chosen.type!=null)? chosen.type : couponTypeCard);
-
-  var lastArr = callMarketLastPrices_([figi]);
-  var lp = (lastArr && lastArr.length) ? lastArr[0] : null;
-  var lastPrice = lp ? bondPricePctToCurrency_(lp.lastPrice, nominal) : null;
-  var priceTime = lp ? lp.time : '';
-  var accrued   = callMarketAccruedInterestsToday_(figi);
-  var approxYieldPct = (couponValue!=null && couponsPerYear && lastPrice) ? (couponValue*couponsPerYear/lastPrice)*100 : null;
-
-  return {
-    figi: figi,
-    name: card.name || card.placementName || '',
-    ticker: card.ticker || '',
-    currency: card.currency || card.currencyCode || '',
-    nominal: nominal,
-    couponRate: couponRate,
-    couponValue: couponValue,
-    couponsPerYear: couponsPerYear,
-    couponTypeDesc: couponTypeDesc,
-    riskLevelDesc: riskDesc,
-    nextCouponDate: chosen ? dateOrEmpty_(chosen.dtIso) : '',
-    couponNumber: chosen ? (chosen.number||'') : '',
-    couponPeriodDays: chosen ? (chosen.period||'') : '',
-    fixDate: chosen ? dateOrEmpty_(chosen.fixIso) : '',
-    lastPrice: (lastPrice!=null? round2_(lastPrice): null),
-    priceTime: priceTime || '',
-    accrued: (accrued!=null? round2_(accrued): null),
-    approxYieldPct: (approxYieldPct!=null? round2_(approxYieldPct): null)
-  };
-}
-
+// Купонное модальное окно
 function showBondCouponInfoByFigi(figi){
   try{
     var s = getBondCouponSnapshot_(figi);
@@ -235,8 +186,8 @@ function showBondCouponInfoByFigi(figi){
       '',
       'Уровень риска: ' + (s.riskLevelDesc || '—')
     ];
-    notify_('Купон по FIGI', lines.join(' • '), 6);
+    showPanel_('Купон по FIGI', '<pre style="white-space:pre-wrap;margin:0">'+htmlEscape_(lines.join('\n'))+'</pre>');
   }catch(e){
-    notify_('Ошибка', (e && e.message) || String(e), 6);
+    showSnack_((e && e.message) || String(e), 'Ошибка', 4000);
   }
 }
