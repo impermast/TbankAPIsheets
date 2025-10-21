@@ -1,69 +1,13 @@
 /**
  * tinkoff_api.gs
- * Ядро: токен, HTTP, API-обёртки Tinkoff Invest v2
+ * Обёртки Tinkoff Invest v2 по сервисам API (без UI).
+ * Зависимости: cacheGet_, cachePut_, qToNumber, moneyToNumber, tsToIso (utils).
  */
 
-// ============================== TOKEN ===============================
-function setTinkoffToken(token) {
-  if (!token || typeof token !== 'string') {
-    throw new Error('Пустой или неверный токен');
-  }
-  // можно выбрать ScriptProperties (общий) или UserProperties (персональный)
-  PropertiesService.getUserProperties().setProperty('TINKOFF_TOKEN', token.trim());
-}
-
-function getTinkoffToken() {
-  var t = PropertiesService.getUserProperties().getProperty('TINKOFF_TOKEN');
-  if (!t) throw new Error('Не найден TINKOFF_TOKEN (проверьте: Настройки → Задать токен)');
-  return t;
-}
-
-// ============================== HTTP ================================
-function tinkoffFetch(methodPath, body, opt) {
-  var url = 'https://invest-public-api.tinkoff.ru/rest/' + methodPath;
-  var options = {
-    method: 'post',
-    muteHttpExceptions: true,
-    contentType: 'application/json; charset=utf-8',
-    headers: { Authorization: 'Bearer ' + getTinkoffToken() },
-    payload: JSON.stringify(body || {})
-  };
-  var resp = UrlFetchApp.fetch(url, options);
-  var code = resp.getResponseCode();
-  var text = resp.getContentText();
-
-  if (code === 429 || code >= 500) {
-    Utilities.sleep((opt && opt.retrySleepMs) || 400);
-    var resp2 = UrlFetchApp.fetch(url, options);
-    code = resp2.getResponseCode();
-    text = resp2.getContentText();
-  }
-  if (code === 404 && opt && opt.allow404) return null;
-  if (code < 200 || code >= 300) throw new Error('Tinkoff API error ' + code + ': ' + text);
-  return JSON.parse(text);
-}
-function tinkoffFetchRaw_(methodPath, body) {
-  var url = 'https://invest-public-api.tinkoff.ru/rest/' + methodPath;
-  var options = {
-    method: 'post',
-    muteHttpExceptions: true,
-    contentType: 'application/json; charset=utf-8',
-    headers: { Authorization: 'Bearer ' + getTinkoffToken() },
-    payload: JSON.stringify(body || {})
-  };
-  var resp = UrlFetchApp.fetch(url, options);
-  return { code: resp.getResponseCode(), text: resp.getContentText() };
-}
-
-
-
-// =========================== API WRAPPERS ===========================
-// Instruments (с кэшем)
-
+// =========================== Instruments ============================
 function callInstrumentsBondByFigi_(figi) {
   var ck = 'bondBy:' + figi;
-  var cached = cacheGet_(ck);
-  if (cached) return JSON.parse(cached);
+  var c = cacheGet_(ck); if (c) return JSON.parse(c);
   var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.InstrumentsService/BondBy',
                        { idType:'INSTRUMENT_ID_TYPE_FIGI', id:figi }, {allow404:true});
   var res = d ? d.instrument || null : null;
@@ -76,15 +20,174 @@ function callInstrumentsShareByFigi_(figi) {
   return d ? d.instrument || null : null;
 }
 function callInstrumentsEtfByFigi_(figi) {
+  var ck = 'etfBy:' + figi;
+  var c = cacheGet_(ck); if (c) return JSON.parse(c);
   var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.InstrumentsService/EtfBy',
                        { idType:'INSTRUMENT_ID_TYPE_FIGI', id:figi }, {allow404:true});
-  return d ? d.instrument || null : null;
+  var inst = d ? (d.instrument || d.etf || null) : null;
+  if (!inst) return null;
+
+  // Нормализация ETF
+  if (inst.realExchange && !inst.exchange) inst.exchange = inst.realExchange;
+  if (inst.lotSize != null && inst.lot == null) inst.lot = inst.lotSize;
+  if (inst.company == null && inst.provider != null) inst.company = inst.provider;
+  try {
+    if (inst.expenseRatio == null && inst.totalExpense != null) {
+      var er = moneyToNumber(inst.totalExpense);
+      if (er != null) inst.expenseRatio = er;
+    }
+  } catch(e){}
+  if (inst.blockedTcaFlag == null) {
+    if (inst.isBlocked != null) inst.blockedTcaFlag = !!inst.isBlocked;
+  } else {
+    inst.blockedTcaFlag = !!inst.blockedTcaFlag;
+  }
+  if (!inst.currency) inst.currency = (inst.buyCurrency || inst.sellCurrency || '') || inst.currency;
+
+  cachePut_(ck, JSON.stringify(inst), 6*3600);
+  return inst;
 }
-function callInstrumentsOptionByFigi_(figi) {
-  var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.InstrumentsService/OptionBy',
-                       { idType:'INSTRUMENT_ID_TYPE_FIGI', id:figi }, {allow404:true});
-  return d ? (d.instrument || d.option || null) : null;
+
+
+/** ========== OPTIONS (совместимо с GetOptionBy/GetOptions и старыми OptionBy/OptionsBy) ========== */
+
+/** Опцион по FIGI (если передали UID по ошибке — попробуем как UID). */
+function callInstrumentsOptionByFigi_(id){
+  var ck = 'optByFigi:v2:' + id;
+  var c  = cacheGet_(ck); if (c) return JSON.parse(c);
+
+  var inst = null;
+
+  // Новый метод
+  try{
+    var d = tinkoffFetch(
+      'tinkoff.public.invest.api.contract.v1.InstrumentsService/GetOptionBy',
+      { idType:'INSTRUMENT_ID_TYPE_FIGI', id:String(id) },
+      { allow404:true }
+    );
+    inst = d ? (d.instrument || d.option || null) : null;
+  }catch(_){}
+
+  // Фоллбек: вдруг это UID
+  if (!inst){
+    try{
+      var d2 = tinkoffFetch(
+        'tinkoff.public.invest.api.contract.v1.InstrumentsService/GetOptionBy',
+        { idType:'INSTRUMENT_ID_TYPE_UID', id:String(id) },
+        { allow404:true }
+      );
+      inst = d2 ? (d2.instrument || d2.option || null) : null;
+    }catch(_){}
+  }
+
+  // Легаси фоллбек (старый метод)
+  if (!inst){
+    try{
+      var d3 = tinkoffFetch(
+        'tinkoff.public.invest.api.contract.v1.InstrumentsService/OptionBy',
+        { idType:'INSTRUMENT_ID_TYPE_FIGI', id:String(id) },
+        { allow404:true }
+      );
+      inst = d3 ? (d3.instrument || d3.option || null) : null;
+    }catch(_){}
+  }
+
+  if (inst) cachePut_(ck, JSON.stringify(inst), 3*3600);
+  return inst;
 }
+
+/** Опцион по UID. */
+function callInstrumentsOptionByUid_(uid){
+  var ck = 'optByUid:v2:' + uid;
+  var c  = cacheGet_(ck); if (c) return JSON.parse(c);
+
+  var inst = null;
+
+  // Новый метод
+  try{
+    var d = tinkoffFetch(
+      'tinkoff.public.invest.api.contract.v1.InstrumentsService/GetOptionBy',
+      { idType:'INSTRUMENT_ID_TYPE_UID', id:String(uid) },
+      { allow404:true }
+    );
+    inst = d ? (d.instrument || d.option || null) : null;
+  }catch(_){}
+
+  // Легаси фоллбек
+  if (!inst){
+    try{
+      var d2 = tinkoffFetch(
+        'tinkoff.public.invest.api.contract.v1.InstrumentsService/OptionBy',
+        { idType:'INSTRUMENT_ID_TYPE_UID', id:String(uid) },
+        { allow404:true }
+      );
+      inst = d2 ? (d2.instrument || d2.option || null) : null;
+    }catch(_){}
+  }
+
+  if (inst) cachePut_(ck, JSON.stringify(inst), 3*3600);
+  return inst;
+}
+
+/**
+ * Все опционы по базовому активу.
+ * ref: строка (basicAssetUid) ИЛИ объект { basicAssetUid, basicAssetPositionUid }.
+ */
+function callInstrumentsOptionsBy_(ref){
+  var key = (typeof ref === 'string') ? ref : JSON.stringify(ref||{});
+  var ck  = 'optionsBy:v2:' + key;
+  var c   = cacheGet_(ck); if (c) return JSON.parse(c);
+
+  // Собираем запрос для нового метода
+  var req = {};
+  if (typeof ref === 'string') {
+    req.basicAssetUid = ref;
+  } else if (ref && typeof ref === 'object') {
+    if (ref.basicAssetUid) req.basicAssetUid = String(ref.basicAssetUid);
+    if (ref.basicAssetPositionUid) req.basicAssetPositionUid = String(ref.basicAssetPositionUid);
+  }
+
+  var list = [];
+
+  // Новый метод
+  try{
+    var d = tinkoffFetch(
+      'tinkoff.public.invest.api.contract.v1.InstrumentsService/GetOptions',
+      req,
+      { allow404:true }
+    );
+    list = d ? (d.options || d.instruments || []) : [];
+  }catch(_){}
+
+  // Легаси фоллбек (в старом был только basicAssetUid)
+  if (!list || !list.length){
+    try{
+      var d2 = tinkoffFetch(
+        'tinkoff.public.invest.api.contract.v1.InstrumentsService/OptionsBy',
+        { basicAssetUid: (req.basicAssetUid || key) },
+        { allow404:true }
+      );
+      list = d2 ? (d2.instruments || d2.options || []) : [];
+    }catch(_){}
+  }
+
+  cachePut_(ck, JSON.stringify(list||[]), 3*3600);
+  return list || [];
+}
+
+
+
+/** Asset по UID (ETF-поля: focusType, totalExpense, tracking error и т. п.) */
+function callInstrumentsGetAssetByUid_(assetUid){
+  var ck = 'assetByUid:v2:' + assetUid;
+  var c = cacheGet_(ck); if (c) return JSON.parse(c);
+  var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.InstrumentsService/GetAssetBy',
+                       { idType: 'ASSET_ID_TYPE_UID', id: assetUid }, { allow404:true });
+  var asset = d ? (d.asset || null) : null;
+  if (asset) cachePut_(ck, JSON.stringify(asset), 6*3600);
+  return asset;
+}
+/** Купоны облигации (сырой/кэш) */
 function callInstrumentsGetBondCoupons_(figi, fromIso, toIso) {
   var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.InstrumentsService/GetBondCoupons',
                        { figi:figi, from:fromIso, to:toIso }, {allow404:true});
@@ -93,14 +196,13 @@ function callInstrumentsGetBondCoupons_(figi, fromIso, toIso) {
 }
 function callInstrumentsGetBondCouponsCached_(figi, fromIso, toIso){
   var ck = 'coupons:' + figi + ':' + (fromIso||'').slice(0,10) + ':' + (toIso||'').slice(0,10);
-  var c = cacheGet_(ck);
-  if (c) return JSON.parse(c);
+  var c = cacheGet_(ck); if (c) return JSON.parse(c);
   var arr = callInstrumentsGetBondCoupons_(figi, fromIso, toIso) || [];
   cachePut_(ck, JSON.stringify(arr), 3*3600);
   return arr;
 }
 
-// MarketData
+// ============================ MarketData ============================
 function callMarketLastPrices_(figis) {
   var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices',
                        { instrumentId: figis });
@@ -123,8 +225,18 @@ function callMarketAccruedInterestsToday_(figi) {
   if (!rec) return null;
   return moneyToNumber(rec.value) ?? qToNumber(rec.accruedInterest) ?? moneyToNumber(rec.accruedValue) ?? null;
 }
+/** Trading status */
+function callMarketGetTradingStatus_(figi){
+  var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.MarketDataService/GetTradingStatus',
+                       { instrumentId: figi }, { allow404:true });
+  if (!d) return null;
+  return {
+    tradingStatus: d.tradingStatus || d.status || d.securityTradingStatus || d.instrumentTradingStatus || '',
+    time: tsToIso(d.time || d.lastTime || d.lastPriceTime || '')
+  };
+}
 
-// Users & Portfolio
+// ======================== Users / Portfolio ========================
 function callUsersGetAccounts_() {
   var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts', {});
   var a = d.accounts || [];
@@ -145,30 +257,32 @@ function callPortfolioGetPortfolio_(accountId) {
     };
   });
 }
+
+
 function callPortfolioGetPositions_(accountId) {
-  var d = tinkoffFetch('tinkoff.public.invest.api.contract.v1.OperationsService/GetPositions',
-                       { accountId: accountId }, {allow404:true});
+  var d = tinkoffFetch(
+    'tinkoff.public.invest.api.contract.v1.OperationsService/GetPositions',
+    { accountId: accountId }, { allow404: true }
+  );
   if (!d) return [];
+
   var out = [];
-  if (Array.isArray(d.securities)) {
-    d.securities.forEach(function (s) {
-      out.push({
-        figi: s.figi || s.instrumentFigi || '',
-        quantity: qToNumber(s.quantity) ?? (s.balance != null ? Number(s.balance) : null),
-        avg: moneyToNumber(s.averagePositionPrice || s.averagePositionPriceFifo || s.averagePositionPriceNoNkd),
-        avg_fifo: moneyToNumber(s.averagePositionPriceFifo || s.averagePositionPrice || s.averagePositionPriceNoNkd)
-      });
+  function pushPos(p) {
+    if (!p) return;
+    out.push({
+      figi: p.figi || p.instrumentFigi || '',
+      instrumentUid: p.instrumentUid || p.uid || '',
+      quantity: qToNumber(p.quantity) ?? (p.balance != null ? Number(p.balance) : null),
+      avg: moneyToNumber(p.averagePositionPrice || p.averagePositionPriceFifo || p.averagePositionPriceNoNkd),
+      avg_fifo: moneyToNumber(p.averagePositionPriceFifo || p.averagePositionPrice || p.averagePositionPriceNoNkd)
     });
   }
-  if (Array.isArray(d.positions)) {
-    d.positions.forEach(function (p) {
-      out.push({
-        figi: p.figi || p.instrumentFigi || '',
-        quantity: qToNumber(p.quantity) ?? (p.balance != null ? Number(p.balance) : null),
-        avg: moneyToNumber(p.averagePositionPrice || p.averagePositionPriceFifo || p.averagePositionPriceNoNkd),
-        avg_fifo: moneyToNumber(p.averagePositionPriceFifo || p.averagePositionPrice || p.averagePositionPriceNoNkd)
-      });
-    });
-  }
+
+  (d.securities   || []).forEach(pushPos);
+  (d.positions    || []).forEach(pushPos);
+  (d.options      || []).forEach(pushPos);    // <-- опционы
+  (d.futures      || []).forEach(pushPos);
+  (d.derivatives  || []).forEach(pushPos);    // на всякий случай
+
   return out;
 }

@@ -7,22 +7,36 @@ function onOpen(){
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Тинькофф • Портфель')
 
+    // ГЛАВНОЕ: Информация по FIGI
+    .addItem('Информация по FIGI…', 'menuShowInstrumentInfoByFigi')
+    .addSeparator() 
     // Блок: Облигации
     .addSubMenu(
       ui.createMenu('Облигации')
         .addItem('Обновить только цены', 'menuUpdateBondPrices')   // читает FIGI из Input!A (Облигации)
         .addItem('Полное обновление', 'menuFullUpdateBonds')        // читает FIGI из Input!A (Облигации)
-        .addSeparator()
-        .addItem('Показать купон по FIGI…', 'menuShowBondCouponByFigi')
+    )
+
+    // Блок: Фонды
+    .addSubMenu(
+      ui.createMenu('Фонды')
+        .addItem('Обновить только цены', 'menuUpdateFundPrices')   // читает FIGI из Input!B (Фонды)
+        .addItem('Полное обновление', 'menuFullUpdateFunds')
+    )
+    // В onOpen():
+    .addSubMenu(
+      ui.createMenu('Опционы')
+        .addItem('Обновить только цены', 'menuUpdateOptionPrices')
+        .addItem('Полное обновление', 'menuFullUpdateOptions')
     )
 
     // Блок: Портфель / Аккаунт
+    .addSeparator() 
     .addSubMenu(
       ui.createMenu('Портфель')
         .addItem('Проверка доступа', 'debugPortfolioAccess')
         .addItem('Список аккаунтов', 'portfolioShowAccounts')
-        .addItem('Сводка балансов', 'portfolioShowBalances')
-        .addItem('Счётчик позиций', 'portfolioShowPositionsCount')
+        .addItem('Сводка активов', 'portfolioShowAllAssets')
     )
 
     // Блок: Данные
@@ -58,19 +72,23 @@ function uiSetToken(){
 }
 
 /** Меню → действия */
+function menuUpdateFundPrices(){ updateFundPricesOnly(); }
+function menuFullUpdateFunds(){  updateFundsFull(); }
 function menuUpdateBondPrices(){ updateBondPricesOnly(); }
 function menuFullUpdateBonds(){  updateBondsFull(); }
 function menuBuildDashboard(){   buildBondsDashboard(); }
+function menuFullUpdateOptions(){ updateOptionsFull(); }
+function menuUpdateOptionPrices(){ updateOptionPricesOnly(); }
 
-/** Диалог «Купон по FIGI» */
-function menuShowBondCouponByFigi(){
+/** Единая загрузка FIGИ всех типов */
+function menuLoadFigisAllTypes(){ loadInputFigisAllTypes_(); }
+
+/** Новое: Информация по FIGI (универсально для bond/etf/share/option) */
+function menuShowInstrumentInfoByFigi(){
   var ui = SpreadsheetApp.getUi();
-  var resp = ui.prompt('Купон по FIGI', 'Введите FIGI облигации (например, TCS00A123456):', ui.ButtonSet.OK_CANCEL);
+  var resp = ui.prompt('Информация по FIGI', 'Введите FIGI (например, TCS00A123456):', ui.ButtonSet.OK_CANCEL);
   if (resp.getSelectedButton() !== ui.Button.OK) return;
   var figi = (resp.getResponseText() || '').trim();
-  if (!figi) { showSnack_('Пусто — отмена', 'Купон по FIGI', 2500); return; }
-  showBondCouponInfoByFigi(figi);
+  if (!figi) { showSnack_('Пусто — отмена', 'Информация по FIGI', 2500); return; }
+  showInstrumentInfoByFigi(figi);
 }
-
-/** Единая загрузка FIGI всех типов в лист Input (A: облигации, B: фонды, C: акции, D: опционы) */
-function menuLoadFigisAllTypes(){ loadInputFigisAllTypes_(); }

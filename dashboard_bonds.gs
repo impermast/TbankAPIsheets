@@ -1,8 +1,3 @@
-/**
- * bonds_dashboard.gs
- * Построение листа «Dashboard» с лок-синхронизацией
- */
-
 function buildBondsDashboard(){
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) { showSnack_('Другая операция обновляет Dashboard. Повторите позже.','Dashboard',3000); return; }
@@ -21,7 +16,7 @@ function buildBondsDashboard(){
 
     var cName    = idx('Название');
     var cFIGI    = idx('FIGI');
-    var cRiskNum = idx('Риск (ручн.)');       // ручной риск (по Rules)
+    var cRiskNum = idx('Риск (ручн.)');
     var cSector  = idx('Сектор');
     var cQty     = idx('Кол-во');
     var cPrice   = idx('Текущая цена');
@@ -49,11 +44,14 @@ function buildBondsDashboard(){
     // --- Агрегации ---
     var invested = 0, market = 0, plRub = 0;
     var sectors = {};
+    var sectorPl = {};                       // ← NEW: P/L по секторам (для просадки)
     var riskCnt = { 'Низкий':0, 'Средний':0, 'Высокий':0 };
     var wCouponNum = 0, wCouponDen = 0;
 
     var wYtmNum = 0, wYtmDen = 0;
     var scatterRiskYield = [['Риск','YTM (%)','Тултип']];
+
+    var topYtmCandidates = [];               // ← NEW: сбор кандидатов для Top-5 YTM
 
     var monthAgg = {};
     var today = new Date();
@@ -78,7 +76,8 @@ function buildBondsDashboard(){
       var pl  = Number(val(cPL))  || 0;
 
       invested += inv; market += mkt; plRub += pl;
-      sectors[sec] = (sectors[sec]||0) + mkt;
+      sectors[sec]  = (sectors[sec] || 0) + mkt;
+      sectorPl[sec] = (sectorPl[sec]|| 0) + pl;             // ← NEW: аккумулируем P/L по сектору
 
       var coupPctAltIdx = idx('Купон, %');
       var coupPctAlt = Number(coupPctAltIdx ? val(coupPctAltIdx) : NaN);
@@ -112,6 +111,8 @@ function buildBondsDashboard(){
             var tip = name + '\n' + figi + '\nYTM: ' + r2(ytmPct) + '%';
             scatterRiskYield.push([riskNum, r2(ytmPct), tip]);
           }
+          // ← NEW: собираем кандидатов (можно фильтровать по liqudity/mkt>0)
+          topYtmCandidates.push({ name:name, figi:figi, ytm:ytmPct, years:yearsToMat });
         }
       }
 
@@ -160,7 +161,7 @@ function buildBondsDashboard(){
     ];
     dst.getRange(1,4,riskTable.length,riskTable[0].length).setValues(riskTable).setFontWeight('bold');
 
-    // Сектора
+    // Сектора (рыночная стоимость)
     var secArr = Object.keys(sectors).sort().map(function(s){ return [s, r2(sectors[s])]; });
     dst.getRange(1,7,1,2).setValues([['Сектор','Рыночная стоимость']]).setFontWeight('bold');
     if(secArr.length) dst.getRange(2,7,secArr.length,2).setValues(secArr);
@@ -195,11 +196,11 @@ function buildBondsDashboard(){
     // Очистить старые диаграммы
     dst.getCharts().forEach(function(ch){ dst.removeChart(ch); });
 
-    // Палитры
+    // Палитры (без изменений)
     var paletteMain = ['#4F46E5','#22C55E','#EAB308','#EF4444','#06B6D4','#A855F7','#F59E0B','#94A3B8','#10B981','#3B82F6'];
     var paletteRisk = ['#10B981','#EAB308','#EF4444'];
 
-    // Диаграмма: Риски
+    // Диаграммы (как у тебя) …
     var riskRange = dst.getRange(1,4,4,2);
     var riskChart = dst.newChart()
       .setChartType(Charts.ChartType.COLUMN)
@@ -211,7 +212,6 @@ function buildBondsDashboard(){
       .build();
     dst.insertChart(riskChart);
 
-    // Диаграмма: Сектора (pie)
     if(secArr.length){
       var secRange = dst.getRange(1,7,Math.max(2,secArr.length+1),2);
       var pie = dst.newChart()
@@ -226,7 +226,6 @@ function buildBondsDashboard(){
       dst.insertChart(pie);
     }
 
-    // Диаграмма: Погашения по годам
     if(years.length){
       var yrRange = dst.getRange(1,10,Math.max(2,years.length+1),2);
       var matChart = dst.newChart()
@@ -240,7 +239,6 @@ function buildBondsDashboard(){
       dst.insertChart(matChart);
     }
 
-    // Диаграмма: Купоны по месяцам
     if(monthsSorted.length){
       var monRange = dst.getRange(1,13,Math.max(2,monthsSorted.length+1),2);
       var monChart = dst.newChart()
@@ -254,7 +252,6 @@ function buildBondsDashboard(){
       dst.insertChart(monChart);
     }
 
-    // Диаграмма: YTM vs Купонная доходность
     var cmpStartRow = Math.max(22, 20 + Math.max(years.length, monthsSorted.length) + 2);
     var cmpData = [
       ['Метрика','Значение'],
@@ -273,7 +270,6 @@ function buildBondsDashboard(){
       .build();
     dst.insertChart(cmpChart);
 
-    // Scatter: Риск vs YTM
     if(scatterRiskYield.length > 1){
       dst.getRange(cmpStartRow, 7, scatterRiskYield.length, 3).setValues(scatterRiskYield).setFontWeight('bold');
       var scRange = dst.getRange(cmpStartRow, 7, scatterRiskYield.length, 3);
@@ -290,13 +286,102 @@ function buildBondsDashboard(){
       dst.insertChart(scChart);
     }
 
+    // ====== NEW: Таблица Top-5 по YTM и Таблица «Просадка P/L по секторам» ======
+    var EXT_COL = 20; // T
+    var row = 1;
+
+    // Top-5 по YTM
+    topYtmCandidates.sort(function(a,b){ return (b.ytm||-1e9) - (a.ytm||-1e9); });
+    var top5 = topYtmCandidates.slice(0, 5);
+    var ytmTab = [['Top YTM (5)','YTM (%)','До погашения (лет)','FIGI']];
+    top5.forEach(function(x){
+      ytmTab.push([x.name, r2(x.ytm), r2(x.years), x.figi]);
+    });
+    dst.getRange(row, EXT_COL, ytmTab.length, ytmTab[0].length).setValues(ytmTab);
+    dst.getRange(row, EXT_COL, 1, ytmTab[0].length).setFontWeight('bold');
+
+    row += ytmTab.length + 2;
+
+        // --- Топ-3 прибыльные/убыточные облигации по P/L (%) ---
+    (function writeTop3Bonds(){
+      // индексы уже посчитаны выше
+      var cCouponPct = idx('Купон, %'); // может не быть
+
+      // вспомогалки
+      function valOf(row, ci){ return (ci ? row[ci-1] : ''); }
+      function r2(x){ return Math.round(Number(x||0)*100)/100; }
+
+      // соберём массив с нужными полями
+      var items = rows.map(function(r){
+        var name = String(valOf(r, cName) || '');
+        var plPct = Number(valOf(r, cPLPct));
+        // купон %: берём готовый столбец, иначе приблизительно считаем
+        var cupPct = null;
+        var price  = Number(valOf(r, cPrice));
+        var cupPY  = Number(valOf(r, cCupPY));
+        var cupVal = Number(valOf(r, cCupVal));
+
+        if (cCouponPct){ 
+          var tmp = Number(valOf(r, cCouponPct));
+          if (!isNaN(tmp)) cupPct = tmp;
+        }
+        if (cupPct == null && price>0 && cupPY>0 && cupVal>=0){
+          cupPct = (cupVal * cupPY) / price * 100;
+        }
+
+        return {
+          name: name,
+          cupPct: isFinite(cupPct) ? r2(cupPct) : '',
+          plPct: isFinite(plPct) ? r2(plPct) : null
+        };
+      }).filter(function(x){ return x.name && x.plPct!=null; });
+
+      if (!items.length) return;
+
+      // топ-3: прибыльные (по убыванию) и убыточные (по возрастанию)
+      var best = items.slice().sort(function(a,b){ return b.plPct - a.plPct; }).slice(0,3);
+      var worst= items.slice().sort(function(a,b){ return a.plPct - b.plPct; }).slice(0,3);
+
+      // найдём безопасную позицию под таблицы
+      var startRow = Math.max(22, 20 + Math.max(years.length, monthsSorted.length) + 12); // ниже нижних чартов
+      var colA = 1, colE = 5;
+
+      // заголовки
+      dst.getRange(startRow, colA, 1, 3).setValues([['Топ-3 прибыльные облигации (P/L, %)', '', '']]).setFontWeight('bold');
+      dst.getRange(startRow, colE, 1, 3).setValues([['Топ-3 убыточные облигации (P/L, %)', '', '']]).setFontWeight('bold');
+
+      // шапки таблиц
+      dst.getRange(startRow+1, colA, 1, 3).setValues([['Название','Купон (%)','P/L (%)']]).setFontWeight('bold');
+      dst.getRange(startRow+1, colE, 1, 3).setValues([['Название','Купон (%)','P/L (%)']]).setFontWeight('bold');
+
+      // данные
+      var bestRows  = best.map(function(x){ return [x.name, x.cupPct, x.plPct]; });
+      var worstRows = worst.map(function(x){ return [x.name, x.cupPct, x.plPct]; });
+
+      if (bestRows.length)  dst.getRange(startRow+2, colA, bestRows.length, 3).setValues(bestRows);
+      if (worstRows.length) dst.getRange(startRow+2, colE, worstRows.length, 3).setValues(worstRows);
+    })();
+
     dst.autoResizeColumns(1, 20);
+
+
+
+    // Просадка P/L по секторам (TOP-3 худших)
+    var secPlArr = Object.keys(sectorPl).map(function(s){ return {sec:s, pl:sectorPl[s]}; });
+    secPlArr.sort(function(a,b){ return a.pl - b.pl; }); // по возрастанию (хуже — раньше)
+    var worst = secPlArr.slice(0, Math.min(3, secPlArr.length));
+
+    var drawTab = [['P/L по секторам (TOP-худшие)','P/L (руб)']];
+    worst.forEach(function(x){ drawTab.push([x.sec, r2(x.pl)]); });
+
+    dst.getRange(row, EXT_COL, drawTab.length, drawTab[0].length).setValues(drawTab);
+    dst.getRange(row, EXT_COL, 1, drawTab[0].length).setFontWeight('bold');
+
+    // Автоширина
+    dst.autoResizeColumns(1, 26);
+
     showSnack_('Dashboard обновлён','Dashboard',2000);
   } finally {
     lock.releaseLock();
   }
 }
-
-// helpers (повторно используем)
-function addDays_(d, n){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()+n); }
-function addMonths_(d, n){ return new Date(d.getFullYear(), d.getMonth()+n, 1); }
