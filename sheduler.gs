@@ -51,7 +51,7 @@ function installWeeklyAutoRefresh(hour){
     .onWeekDay(ScriptApp.WeekDay.MONDAY)
     .atHour(hour)
     .create();
-  Logger.log('Weekly trigger set: SATURDAY at ' + hour + ':00');
+  Logger.log('Weekly trigger set: MONDAY at ' + hour + ':00');
 }
 
 /** Удалить все триггеры этой задачи. */
