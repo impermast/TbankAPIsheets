@@ -232,324 +232,481 @@ function sendDashboardGreets_() {
 }
 
 function sendDashboardStatsFromDashboard_() {
-  var sh = SpreadsheetApp.getActive().getSheetByName('Dashboard');
-  if (!sh) { tgSendMessage_('Лист Dashboard не найден.'); return; }
+var sh = SpreadsheetApp.getActive().getSheetByName('Dashboard');
+if (!sh) { tgSendMessage_('Лист Dashboard не найден.'); return; }
 
-  var extCol = 20; // T
+var extCol = 20; // T
 
-  // Старые bond-секции: читаем как и раньше
-  var topYtm   = _readSectionTableT_(sh, DASHBOARD_SECTIONS.topYtm.header, extCol, 6);
-  var bestPL   = _readSectionTableT_(sh, DASHBOARD_SECTIONS.bestPL.header, extCol, 6);
-  var worstPL  = _readSectionTableT_(sh, DASHBOARD_SECTIONS.worstPL.header, extCol, 6);
-  var worstSec = _readSectionTableT_(sh, DASHBOARD_SECTIONS.worstSec.header, extCol, 6);
+// Старые bond-секции: читаем как и раньше
+var topYtm = readSectionTableT(sh, DASHBOARD_SECTIONS.topYtm.header, extCol, 6);
+var bestPL = readSectionTableT(sh, DASHBOARD_SECTIONS.bestPL.header, extCol, 6);
+var worstPL = readSectionTableT(sh, DASHBOARD_SECTIONS.worstPL.header, extCol, 6);
+var worstSec = readSectionTableT(sh, DASHBOARD_SECTIONS.worstSec.header, extCol, 6);
 
-  function trim(v) {
-    return String(v == null ? '' : v).trim();
-  }
+function trim(v) {
+return String(v == null ? '' : v).trim();
+}
 
-  function firstNonEmptyAfter0(row) {
-    for (var i = 1; i < row.length; i++) {
-      var v = trim(row[i]);
-      if (v) return v;
+function firstNonEmptyAfter0(row) {
+for (var i = 1; i < row.length; i++) {
+var v = trim(row[i]);
+if (v) return v;
+}
+return '—';
+}
+
+function isKnownHeader(text) {
+text = trim(text);
+return text === 'Портфель — итого' ||
+text === 'Классы активов' ||
+text === 'Акции — топ-5 по позиции' ||
+text === 'Акции — топ-5 по P/L' ||
+text === 'Облигации — top YTM' ||
+text === 'Облигации — top P/L' ||
+text === 'Облигации — worst P/L' ||
+text === 'Фонды — top-5 по позиции' ||
+text === 'Фонды — top-5 по P/L' ||
+text === DASHBOARD_SECTIONS.topYtm.header ||
+text === DASHBOARD_SECTIONS.bestPL.header ||
+text === DASHBOARD_SECTIONS.worstPL.header ||
+text === DASHBOARD_SECTIONS.worstSec.header;
+}
+
+function looksLikeHeaderRow(row) {
+var joined = row.map(function(x){ return trim(x).toLowerCase(); }).join('|');
+return joined.indexOf('класс') >= 0 ||
+joined.indexOf('бумаг') >= 0 ||
+joined.indexOf('название') >= 0 ||
+joined.indexOf('тикер') >= 0 ||
+joined.indexOf('рыночная стоимость') >= 0 ||
+joined.indexOf('инвестировано') >= 0 ||
+joined.indexOf('p/l') >= 0 ||
+joined.indexOf('доля') >= 0 ||
+joined.indexOf('показатель') >= 0 ||
+joined.indexOf('метрика') >= 0 ||
+joined.indexOf('ytm') >= 0 ||
+joined.indexOf('до погашения') >= 0 ||
+joined.indexOf('figi') >= 0;
+}
+
+function findHeaderAnywhere(headerText) {
+var lastRow = Math.max(sh.getLastRow(), 1);
+var lastCol = Math.max(sh.getLastColumn(), 1);
+var vals = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+var target = trim(headerText);
+
+for (var r = 0; r < vals.length; r++) {
+  for (var c = 0; c < vals[r].length; c++) {
+    if (trim(vals[r][c]) === target) {
+      return { row: r + 1, col: c + 1 };
     }
-    return '—';
   }
+}
+return null;
 
-  function isKnownHeader(text) {
-    return text === 'Портфель — итого' ||
-           text === 'Классы активов' ||
-           text === 'Акции — топ-5 по позиции' ||
-           text === 'Акции — топ-5 по P/L' ||
-           text === DASHBOARD_SECTIONS.topYtm.header ||
-           text === DASHBOARD_SECTIONS.bestPL.header ||
-           text === DASHBOARD_SECTIONS.worstPL.header ||
-           text === DASHBOARD_SECTIONS.worstSec.header;
-  }
+}
 
-  function looksLikeHeaderRow(row) {
-    var joined = row.map(function(x){ return trim(x).toLowerCase(); }).join('|');
-    return joined.indexOf('класс') >= 0 ||
-           joined.indexOf('бумаг') >= 0 ||
-           joined.indexOf('название') >= 0 ||
-           joined.indexOf('тикер') >= 0 ||
-           joined.indexOf('рыночная стоимость') >= 0 ||
-           joined.indexOf('инвестировано') >= 0 ||
-           joined.indexOf('p/l') >= 0 ||
-           joined.indexOf('доля портфеля') >= 0 ||
-           joined.indexOf('показатель') >= 0 ||
-           joined.indexOf('метрика') >= 0;
-  }
+function readSectionTableAnywhere(headerText, maxWidth) {
+var pos = findHeaderAnywhere(headerText);
+if (!pos) return [];
 
-  function findHeaderAnywhere(headerText, startCol) {
-    startCol = startCol || 1;
-    var lastRow = Math.max(sh.getLastRow(), 1);
-    var lastCol = Math.max(sh.getLastColumn(), 1);
-    if (startCol > lastCol) return null;
+var lastRow = Math.max(sh.getLastRow(), 1);
+var lastCol = Math.max(sh.getLastColumn(), 1);
+var width = Math.min(maxWidth || 8, lastCol - pos.col + 1);
+if (width < 1) return [];
 
-    var vals = sh.getRange(1, startCol, lastRow, lastCol - startCol + 1).getDisplayValues();
-    var target = trim(headerText);
+var out = [];
+var started = false;
 
-    for (var r = 0; r < vals.length; r++) {
-      for (var c = 0; c < vals[r].length; c++) {
-        if (trim(vals[r][c]) === target) {
-          return { row: r + 1, col: startCol + c };
-        }
-      }
-    }
-    return null;
-  }
+for (var rr = pos.row + 1; rr <= lastRow; rr++) {
+  var rowVals = sh.getRange(rr, pos.col, 1, width).getDisplayValues()[0];
+  var first = trim(rowVals[0]);
+  var nonEmpty = false;
 
-  function readSectionTableAnywhere(headerText, startCol, maxWidth) {
-    var pos = findHeaderAnywhere(headerText, startCol || extCol);
-    if (!pos) return [];
-
-    var lastRow = Math.max(sh.getLastRow(), 1);
-    var lastCol = Math.max(sh.getLastColumn(), 1);
-    var width = Math.min(maxWidth || 8, lastCol - pos.col + 1);
-    if (width < 1) return [];
-
-    var out = [];
-    var started = false;
-
-    for (var rr = pos.row + 1; rr <= lastRow; rr++) {
-      var rowVals = sh.getRange(rr, pos.col, 1, width).getDisplayValues()[0];
-      var first = trim(rowVals[0]);
-      var nonEmpty = false;
-
-      for (var i = 0; i < rowVals.length; i++) {
-        if (trim(rowVals[i])) {
-          nonEmpty = true;
-          break;
-        }
-      }
-
-      if (!nonEmpty) {
-        if (started) break;
-        continue;
-      }
-
-      if (isKnownHeader(first)) break;
-
-      started = true;
-      out.push(rowVals);
-    }
-
-    return out;
-  }
-
-  function appendOldBondBlocks(lines) {
-    if (topYtm.length) {
-      lines.push(DASHBOARD_SECTIONS.topYtm.title);
-      topYtm.forEach(function(r, i){
-        var name = String(r[0] || '');
-        var ytm  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
-        var yrs  = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
-        lines.push((i + 1) + '. ' + name + ' — YTM ' + ytm + '%, до погашения ' + yrs + ' г.');
-      });
-      lines.push('');
-    }
-
-    if (bestPL.length) {
-      lines.push(DASHBOARD_SECTIONS.bestPL.title);
-      bestPL.forEach(function(r, i){
-        var name = String(r[0] || '');
-        var cup  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
-        var pl   = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
-        lines.push((i + 1) + '. ' + name + ' — купон ' + cup + '%, P/L ' + pl + '%');
-      });
-      lines.push('');
-    }
-
-    if (worstPL.length) {
-      lines.push(DASHBOARD_SECTIONS.worstPL.title);
-      worstPL.forEach(function(r, i){
-        var name = String(r[0] || '');
-        var cup  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
-        var pl   = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
-        lines.push((i + 1) + '. ' + name + ' — купон ' + cup + '%, P/L ' + pl + '%');
-      });
-      lines.push('');
-    }
-
-    if (worstSec.length) {
-      lines.push(DASHBOARD_SECTIONS.worstSec.title);
-      worstSec.forEach(function(r){
-        var sec = String(r[0] || '');
-        var pl  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '0.00';
-        lines.push('- ' + sec + ': ' + pl + ' ₽');
-      });
-      lines.push('');
+  for (var i = 0; i < rowVals.length; i++) {
+    if (trim(rowVals[i])) {
+      nonEmpty = true;
+      break;
     }
   }
 
-  // Новые секции справа
-  var portfolioTotal = readSectionTableAnywhere('Портфель — итого', extCol, 8);
-  var assetClasses   = readSectionTableAnywhere('Классы активов', extCol, 8);
-  var sharesTopPos   = readSectionTableAnywhere('Акции — топ-5 по позиции', extCol, 8);
-  var sharesTopPL    = readSectionTableAnywhere('Акции — топ-5 по P/L', extCol, 8);
-
-  var hasNewSections = !!(
-    portfolioTotal.length ||
-    assetClasses.length ||
-    sharesTopPos.length ||
-    sharesTopPL.length
-  );
-
-  var lines = [];
-
-  // Если новые секции не найдены — старый текст
-  if (!hasNewSections) {
-    appendOldBondBlocks(lines);
-    lines.push(_historySummaryText_(_readHistoryABC_(sh)));
-    if (!lines.length) lines.push('Статистика на Dashboard не найдена.');
-    tgSendMessage_(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
-    return;
+  if (!nonEmpty) {
+    if (started) break;
+    continue;
   }
 
-  // Портфель
-  if (portfolioTotal.length) {
-    lines.push('Портфель:');
+  if (isKnownHeader(first)) break;
 
-    var wantedPortfolio = ['Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'];
-    var portfolioMap = {};
+  started = true;
+  out.push(rowVals);
+}
 
-    portfolioTotal.forEach(function(r) {
-      if (looksLikeHeaderRow(r)) return;
-      var key = trim(r[0]);
-      if (key) portfolioMap[key] = firstNonEmptyAfter0(r);
-    });
+return out;
 
-    wantedPortfolio.forEach(function(key) {
-      if (portfolioMap[key] != null) lines.push('- ' + key + ' — ' + portfolioMap[key]);
-    });
+}
 
-    Object.keys(portfolioMap).forEach(function(key) {
-      if (wantedPortfolio.indexOf(key) === -1) {
-        lines.push('- ' + key + ' — ' + portfolioMap[key]);
-      }
-    });
+function appendOldBondBlocks(lines) {
+if (topYtm.length) {
+lines.push(DASHBOARD_SECTIONS.topYtm.title);
+topYtm.forEach(function(r, i){
+var name = String(r[0] || '');
+var ytm = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
+var yrs = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
+lines.push((i + 1) + '. ' + name + ' — YTM ' + ytm + '%, до погашения ' + yrs + ' г.');
+});
+lines.push('');
+}
 
-    lines.push('');
+if (bestPL.length) {
+  lines.push(DASHBOARD_SECTIONS.bestPL.title);
+  bestPL.forEach(function(r, i){
+    var name = String(r[0] || '');
+    var cup  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
+    var pl   = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
+    lines.push((i + 1) + '. ' + name + ' — купон ' + cup + '%, P/L ' + pl + '%');
+  });
+  lines.push('');
+}
+
+if (worstPL.length) {
+  lines.push(DASHBOARD_SECTIONS.worstPL.title);
+  worstPL.forEach(function(r, i){
+    var name = String(r[0] || '');
+    var cup  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '—';
+    var pl   = (r[2] != null && r[2] !== '') ? Number(r[2]).toFixed(2) : '—';
+    lines.push((i + 1) + '. ' + name + ' — купон ' + cup + '%, P/L ' + pl + '%');
+  });
+  lines.push('');
+}
+
+if (worstSec.length) {
+  lines.push(DASHBOARD_SECTIONS.worstSec.title);
+  worstSec.forEach(function(r){
+    var sec = String(r[0] || '');
+    var pl  = (r[1] != null && r[1] !== '') ? Number(r[1]).toFixed(2) : '0.00';
+    lines.push('- ' + sec + ': ' + pl + ' ₽');
+  });
+  lines.push('');
+}
+
+}
+
+var headerNames = [
+'Портфель — итого',
+'Классы активов',
+'Акции — топ-5 по позиции',
+'Акции — топ-5 по P/L',
+'Облигации — top YTM',
+'Облигации — top P/L',
+'Облигации — worst P/L',
+'Фонды — top-5 по позиции',
+'Фонды — top-5 по P/L'
+];
+
+var newLayoutFound = false;
+for (var h = 0; h < headerNames.length; h++) {
+if (findHeaderAnywhere(headerNames[h])) {
+newLayoutFound = true;
+break;
+}
+}
+
+var lines = [];
+
+if (!newLayoutFound) {
+appendOldBondBlocks(lines);
+lines.push(historySummaryText(readHistoryABC(sh)));
+if (!lines.length) lines.push('Статистика на Dashboard не найдена.');
+tgSendMessage_(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
+return;
+}
+
+var portfolioTotal = readSectionTableAnywhere('Портфель — итого', 8);
+var assetClasses = readSectionTableAnywhere('Классы активов', 8);
+var sharesTopPos = readSectionTableAnywhere('Акции — топ-5 по позиции', 5);
+var sharesTopPL = readSectionTableAnywhere('Акции — топ-5 по P/L', 5);
+var bondsTopYtm = readSectionTableAnywhere('Облигации — top YTM', 4);
+var bondsTopPLNew = readSectionTableAnywhere('Облигации — top P/L', 3);
+var bondsWorstPLNew= readSectionTableAnywhere('Облигации — worst P/L', 3);
+var fundsTopPos = readSectionTableAnywhere('Фонды — top-5 по позиции', 5);
+var fundsTopPL = readSectionTableAnywhere('Фонды — top-5 по P/L', 5);
+
+// Портфель
+if (portfolioTotal.length) {
+var wantedPortfolio = ['Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'];
+var portfolioMap = {};
+
+portfolioTotal.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
+  var key = trim(r[0]);
+  if (key) portfolioMap[key] = firstNonEmptyAfter0(r);
+});
+
+var portfolioLines = [];
+wantedPortfolio.forEach(function(key) {
+  if (portfolioMap[key] != null) portfolioLines.push('- ' + key + ' — ' + portfolioMap[key]);
+});
+
+Object.keys(portfolioMap).forEach(function(key) {
+  if (wantedPortfolio.indexOf(key) === -1) {
+    portfolioLines.push('- ' + key + ' — ' + portfolioMap[key]);
   }
+});
 
-  // Классы активов
-  if (assetClasses.length) {
-    lines.push('Классы активов:');
+if (portfolioLines.length) {
+  lines.push('Портфель:');
+  Array.prototype.push.apply(lines, portfolioLines);
+  lines.push('');
+}
 
-    var wantedClasses = ['Облигации', 'Фонды', 'Акции', 'Опционы'];
-    var classMap = {};
+}
 
-    assetClasses.forEach(function(r) {
-      if (looksLikeHeaderRow(r)) return;
+// Классы активов
+if (assetClasses.length) {
+var wantedClasses = ['Облигации', 'Фонды', 'Акции', 'Опционы'];
+var classMap = {};
 
-      var key = trim(r[0]);
-      if (!key) return;
+assetClasses.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
 
-      var count = trim(r[1]);
-      var market = trim(r[3]);
-      var share = trim(r[6]);
+  var key = trim(r[0]);
+  if (!key) return;
 
-      var parts = [];
-      if (market) parts.push('стоимость ' + market);
-      if (share) parts.push('доля ' + share);
-      if (!parts.length && count) parts.push('бумаг ' + count);
-      if (!parts.length) parts.push(firstNonEmptyAfter0(r));
+  var count = trim(r[1]);
+  var market = trim(r[3]);
+  var share = trim(r[6]);
 
-      classMap[key] = parts.join(', ');
-    });
+  var parts = [];
+  if (market) parts.push('стоимость ' + market);
+  if (share) parts.push('доля ' + share);
+  if (!parts.length && count) parts.push('бумаг ' + count);
+  if (!parts.length) parts.push(firstNonEmptyAfter0(r));
 
-    wantedClasses.forEach(function(key) {
-      if (classMap[key] != null) lines.push('- ' + key + ' — ' + classMap[key]);
-    });
+  classMap[key] = parts.join(', ');
+});
 
-    Object.keys(classMap).forEach(function(key) {
-      if (wantedClasses.indexOf(key) === -1) {
-        lines.push('- ' + key + ' — ' + classMap[key]);
-      }
-    });
+var classLines = [];
+wantedClasses.forEach(function(key) {
+  if (classMap[key] != null) classLines.push('- ' + key + ' — ' + classMap[key]);
+});
 
-    lines.push('');
+Object.keys(classMap).forEach(function(key) {
+  if (wantedClasses.indexOf(key) === -1) {
+    classLines.push('- ' + key + ' — ' + classMap[key]);
   }
+});
 
-  // Акции
-  if (sharesTopPos.length || sharesTopPL.length) {
-    lines.push('Акции:');
+if (classLines.length) {
+  lines.push('Классы активов:');
+  Array.prototype.push.apply(lines, classLines);
+  lines.push('');
+}
 
-    var shareMap = {};
-    var shareOrder = [];
+}
 
-    function ensureShare(name, ticker) {
-      var key = name;
-      if (!shareMap[key]) {
-        shareMap[key] = {
-          ticker: ticker || '',
-          pos: '—',
-          pl: '—'
-        };
-        shareOrder.push(key);
-      } else if (!shareMap[key].ticker && ticker) {
-        shareMap[key].ticker = ticker;
-      }
-      return key;
-    }
+// Акции
+if (sharesTopPos.length || sharesTopPL.length) {
+var shareMap = {};
+var shareOrder = [];
 
-    sharesTopPos.forEach(function(r) {
-      if (looksLikeHeaderRow(r)) return;
-
-      var name = trim(r[0]);
-      var ticker = trim(r[1]);
-      if (!name) return;
-
-      var key = ensureShare(name, ticker);
-      var market = trim(r[2]);
-      var plRub = trim(r[3]);
-      var plPct = trim(r[4]);
-
-      var plText = '—';
-      if (plRub && plPct) plText = plRub + ' (' + plPct + ')';
-      else if (plRub) plText = plRub;
-      else if (plPct) plText = plPct;
-
-      if (market) shareMap[key].pos = market;
-      if (plText !== '—') shareMap[key].pl = plText;
-    });
-
-    sharesTopPL.forEach(function(r) {
-      if (looksLikeHeaderRow(r)) return;
-
-      var name = trim(r[0]);
-      var ticker = trim(r[1]);
-      if (!name) return;
-
-      var key = ensureShare(name, ticker);
-      var market = trim(r[2]);
-      var plRub = trim(r[3]);
-      var plPct = trim(r[4]);
-
-      var plText = '—';
-      if (plRub && plPct) plText = plRub + ' (' + plPct + ')';
-      else if (plRub) plText = plRub;
-      else if (plPct) plText = plPct;
-
-      if (market && shareMap[key].pos === '—') shareMap[key].pos = market;
-      if (plText !== '—') shareMap[key].pl = plText;
-    });
-
-    shareOrder.slice(0, 5).forEach(function(name, i) {
-      var item = shareMap[name] || {};
-      var label = name;
-      if (item.ticker) label += ' (' + item.ticker + ')';
-      lines.push((i + 1) + '. ' + label + ' — позиция ' + (item.pos || '—') + ', P/L ' + (item.pl || '—'));
-    });
-
-    lines.push('');
+function ensureShare(name, ticker) {
+  var key = name;
+  if (!shareMap[key]) {
+    shareMap[key] = { ticker: ticker || '', pos: '—', pl: '—' };
+    shareOrder.push(key);
+  } else if (!shareMap[key].ticker && ticker) {
+    shareMap[key].ticker = ticker;
   }
+  return key;
+}
 
-  // Старые bond-блоки
-  appendOldBondBlocks(lines);
+sharesTopPos.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
+  var name = trim(r[0]);
+  var ticker = trim(r[1]);
+  var market = trim(r[2]);
+  var plRub = trim(r[3]);
+  var plPct = trim(r[4]);
+  if (!name) return;
 
-  if (!lines.length) lines.push('Статистика на Dashboard не найдена.');
-  tgSendMessage_(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
+  var key = ensureShare(name, ticker);
+  if (market) shareMap[key].pos = market;
+  if (plRub && plPct) shareMap[key].pl = plRub + ' (' + plPct + ')';
+  else if (plRub) shareMap[key].pl = plRub;
+  else if (plPct) shareMap[key].pl = plPct;
+});
+
+sharesTopPL.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
+  var name = trim(r[0]);
+  var ticker = trim(r[1]);
+  var market = trim(r[2]);
+  var plRub = trim(r[3]);
+  var plPct = trim(r[4]);
+  if (!name) return;
+
+  var key = ensureShare(name, ticker);
+  if (market && shareMap[key].pos === '—') shareMap[key].pos = market;
+  if (plRub && plPct) shareMap[key].pl = plRub + ' (' + plPct + ')';
+  else if (plRub) shareMap[key].pl = plRub;
+  else if (plPct) shareMap[key].pl = plPct;
+});
+
+var shareLines = [];
+shareOrder.slice(0, 5).forEach(function(name, i) {
+  var item = shareMap[name] || {};
+  var label = name;
+  if (item.ticker) label += ' (' + item.ticker + ')';
+  shareLines.push((i + 1) + '. ' + label + ' — позиция ' + (item.pos || '—') + ', P/L ' + (item.pl || '—'));
+});
+
+if (shareLines.length) {
+  lines.push('Акции:');
+  Array.prototype.push.apply(lines, shareLines);
+  lines.push('');
+}
+
+}
+
+// Облигации
+if (bondsTopYtm.length || bondsTopPLNew.length || bondsWorstPLNew.length) {
+var bondLines = [];
+
+if (bondsTopYtm.length) {
+  bondLines.push('Top YTM:');
+  bondsTopYtm.forEach(function(r, i) {
+    if (looksLikeHeaderRow(r)) return;
+    var name = trim(r[0]);
+    var ytm = trim(r[1]);
+    var years = trim(r[2]);
+    var figi = trim(r[3]);
+    if (!name) return;
+
+    var parts = [];
+    parts.push((i + 1) + '. ' + name + ' — YTM ' + (ytm || '—'));
+    if (years) parts.push(', до погашения ' + years);
+    if (figi) parts.push(', FIGI ' + figi);
+    bondLines.push(parts.join(''));
+  });
+}
+
+if (bondsTopPLNew.length) {
+  if (bondLines.length) bondLines.push('');
+  bondLines.push('Top P/L:');
+  bondsTopPLNew.forEach(function(r, i) {
+    if (looksLikeHeaderRow(r)) return;
+    var name = trim(r[0]);
+    var plRub = trim(r[1]);
+    var plPct = trim(r[2]);
+    if (!name) return;
+
+    var plText = '—';
+    if (plRub && plPct) plText = plRub + ' (' + plPct + ')';
+    else if (plRub) plText = plRub;
+    else if (plPct) plText = plPct;
+
+    bondLines.push((i + 1) + '. ' + name + ' — P/L ' + plText);
+  });
+}
+
+if (bondsWorstPLNew.length) {
+  if (bondLines.length) bondLines.push('');
+  bondLines.push('Worst P/L:');
+  bondsWorstPLNew.forEach(function(r, i) {
+    if (looksLikeHeaderRow(r)) return;
+    var name = trim(r[0]);
+    var plRub = trim(r[1]);
+    var plPct = trim(r[2]);
+    if (!name) return;
+
+    var plText = '—';
+    if (plRub && plPct) plText = plRub + ' (' + plPct + ')';
+    else if (plRub) plText = plRub;
+    else if (plPct) plText = plPct;
+
+    bondLines.push((i + 1) + '. ' + name + ' — P/L ' + plText);
+  });
+}
+
+if (bondLines.length) {
+  lines.push('Облигации:');
+  Array.prototype.push.apply(lines, bondLines);
+  lines.push('');
+}
+
+}
+
+// Фонды
+if (fundsTopPos.length || fundsTopPL.length) {
+var fundMap = {};
+var fundOrder = [];
+
+function ensureFund(name, ticker) {
+  var key = name;
+  if (!fundMap[key]) {
+    fundMap[key] = { ticker: ticker || '', pos: '—', pl: '—' };
+    fundOrder.push(key);
+  } else if (!fundMap[key].ticker && ticker) {
+    fundMap[key].ticker = ticker;
+  }
+  return key;
+}
+
+fundsTopPos.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
+  var name = trim(r[0]);
+  var ticker = trim(r[1]);
+  var market = trim(r[2]);
+  var plRub = trim(r[3]);
+  var plPct = trim(r[4]);
+  if (!name) return;
+
+  var key = ensureFund(name, ticker);
+  if (market) fundMap[key].pos = market;
+  if (plRub && plPct) fundMap[key].pl = plRub + ' (' + plPct + ')';
+  else if (plRub) fundMap[key].pl = plRub;
+  else if (plPct) fundMap[key].pl = plPct;
+});
+
+fundsTopPL.forEach(function(r) {
+  if (looksLikeHeaderRow(r)) return;
+  var name = trim(r[0]);
+  var ticker = trim(r[1]);
+  var market = trim(r[2]);
+  var plRub = trim(r[3]);
+  var plPct = trim(r[4]);
+  if (!name) return;
+
+  var key = ensureFund(name, ticker);
+  if (market && fundMap[key].pos === '—') fundMap[key].pos = market;
+  if (plRub && plPct) fundMap[key].pl = plRub + ' (' + plPct + ')';
+  else if (plRub) fundMap[key].pl = plRub;
+  else if (plPct) fundMap[key].pl = plPct;
+});
+
+var fundLines = [];
+fundOrder.slice(0, 5).forEach(function(name, i) {
+  var item = fundMap[name] || {};
+  var label = name;
+  if (item.ticker) label += ' (' + item.ticker + ')';
+  fundLines.push((i + 1) + '. ' + label + ' — позиция ' + (item.pos || '—') + ', P/L ' + (item.pl || '—'));
+});
+
+if (fundLines.length) {
+  lines.push('Фонды:');
+  Array.prototype.push.apply(lines, fundLines);
+  lines.push('');
+}
+
+}
+
+if (!lines.length) {
+appendOldBondBlocks(lines);
+lines.push(historySummaryText(readHistoryABC(sh)));
+}
+
+if (!lines.length) lines.push('Статистика на Dashboard не найдена.');
+tgSendMessage_(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
 function sendDashboardChartsToTelegram_(aliases) {
