@@ -23,6 +23,14 @@ function onOpen(){
         .addItem('Обновить только цены', 'menuUpdateFundPrices')   // читает FIGI из Input!B (Фонды)
         .addItem('Полное обновление', 'menuFullUpdateFunds')
     )
+
+    // Блок: Акции
+    .addSubMenu(
+      ui.createMenu('Акции')
+        .addItem('Обновить только цены', 'menuUpdateSharePrices')
+        .addItem('Полное обновление', 'menuFullUpdateShares')
+    )
+
     // В onOpen():
     .addSubMenu(
       ui.createMenu('Опционы')
@@ -76,7 +84,15 @@ function menuUpdateFundPrices(){ updateFundPricesOnly(); }
 function menuFullUpdateFunds(){  updateFundsFull(); }
 function menuUpdateBondPrices(){ updateBondPricesOnly(); }
 function menuFullUpdateBonds(){  updateBondsFull(); }
-function menuBuildDashboard(){   buildBondsDashboard(); }
+function menuUpdateSharePrices(){ updateSharePricesOnly(); }
+function menuFullUpdateShares(){ updateSharesFull(); }
+function menuBuildDashboard(){
+  if (typeof buildPortfolioDashboard === 'function') {
+    buildPortfolioDashboard();
+  } else {
+    buildBondsDashboard();
+  }
+}
 function menuFullUpdateOptions(){ updateOptionsFull(); }
 function menuUpdateOptionPrices(){ updateOptionPricesOnly(); }
 
