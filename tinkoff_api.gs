@@ -286,3 +286,151 @@ function callPortfolioGetPositions_(accountId) {
 
   return out;
 }
+function _chunkArray_(arr, size) {
+  var out = [];
+  var step = Number(size) || 100;
+  var i;
+  if (!arr || !arr.length || step <= 0) return out;
+  for (i = 0; i < arr.length; i += step) out.push(arr.slice(i, i + step));
+  return out;
+}
+
+function _normalizeAssetFundamentalItem_(x) {
+  function pick() {
+    var i;
+    for (i = 0; i < arguments.length; i++) {
+      if (arguments[i] != null) return arguments[i];
+    }
+    return null;
+  }
+
+  function toNum(v) {
+    var n;
+    if (v == null || v === '') return null;
+
+    if (typeof v === 'number') return isNaN(v) ? null : v;
+
+    if (typeof v === 'string') {
+      n = Number(v);
+      return isNaN(n) ? null : n;
+    }
+
+    if (typeof v === 'object') {
+      try {
+        if ((v.units != null || v.nano != null) && typeof qToNumber === 'function') {
+          n = qToNumber(v);
+          return (n == null || isNaN(n)) ? null : n;
+        }
+      } catch (e) {}
+
+      try {
+        if ((v.units != null || v.nano != null || v.value != null || v.currency != null) && typeof moneyToNumber === 'function') {
+          n = moneyToNumber(v);
+          return (n == null || isNaN(n)) ? null : n;
+        }
+      } catch (e2) {}
+
+      if (v.value != null) {
+        n = Number(v.value);
+        return isNaN(n) ? null : n;
+      }
+    }
+
+    n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  x = x || {};
+
+  return {
+    assetUid: pick(x.assetUid, x.asset_uid),
+    marketCap: toNum(pick(x.marketCap, x.marketCapitalization, x.market_capitalization)),
+    revenueTtm: toNum(pick(x.revenueTtm, x.revenue_ttm)),
+    ebitdaTtm: toNum(pick(x.ebitdaTtm, x.ebitda_ttm)),
+    netIncomeTtm: toNum(pick(x.netIncomeTtm, x.netIncome_ttm, x.net_income_ttm)),
+    epsTtm: toNum(pick(x.epsTtm, x.eps_ttm)),
+    peRatioTtm: toNum(pick(x.peRatioTtm, x.pe_ratio_ttm)),
+    priceToSalesTtm: toNum(pick(x.priceToSalesTtm, x.price_to_sales_ttm)),
+    priceToBookTtm: toNum(pick(x.priceToBookTtm, x.price_to_book_ttm)),
+    evToEbitda: toNum(pick(x.evToEbitda, x.evToEbitdaMrq, x.ev_to_ebitda_mrq)),
+    roe: toNum(pick(x.roe)),
+    roa: toNum(pick(x.roa)),
+    roic: toNum(pick(x.roic)),
+    debtToEquity: toNum(pick(x.debtToEquity, x.totalDebtToEquityMrq, x.total_debt_to_equity_mrq)),
+    netDebtToEbitda: toNum(pick(x.netDebtToEbitda, x.net_debt_to_ebitda)),
+    freeFloat: toNum(pick(x.freeFloat, x.free_float)),
+    beta: toNum(pick(x.beta)),
+    sharesOutstanding: toNum(pick(x.sharesOutstanding, x.shares_outstanding)),
+    high52w: toNum(pick(x.high52w, x.highPriceLast52Weeks, x.high_price_last_52_weeks)),
+    low52w: toNum(pick(x.low52w, x.lowPriceLast52Weeks, x.low_price_last_52_weeks))
+  };
+}
+
+function callInstrumentsGetAssetFundamentals_(assetUids) {
+  var out = {};
+  var clean = [];
+  var seen = {};
+  var chunks;
+  var endpoint = 'tinkoff.public.invest.api.contract.v1.InstrumentsService/GetAssetFundamentals';
+  var i;
+  var j;
+  var uid;
+  var part;
+  var d;
+  var arr;
+  var item;
+  var norm;
+
+  function getItems_(resp) {
+    var a = null;
+    if (!resp) return [];
+    a = resp.fundamentals || resp.statistics || resp.items || resp.assetFundamentals || resp.fundamental || [];
+    if (Object.prototype.toString.call(a) === '[object Array]') return a;
+    return a ? [a] : [];
+  }
+
+  if (!assetUids || !assetUids.length) return {};
+
+  for (i = 0; i < assetUids.length; i++) {
+    uid = String(assetUids[i] || '').trim();
+    if (!uid || seen[uid]) continue;
+    seen[uid] = 1;
+    clean.push(uid);
+  }
+
+  if (!clean.length) return {};
+
+  chunks = _chunkArray_(clean, 100);
+
+  for (i = 0; i < chunks.length; i++) {
+    part = chunks[i];
+
+    try {
+      d = tinkoffFetch(endpoint, { assets: part }, { allow404: true });
+      arr = getItems_(d);
+
+      for (j = 0; j < arr.length; j++) {
+        item = arr[j];
+        try {
+          norm = _normalizeAssetFundamentalItem_(item);
+          if (norm && norm.assetUid) out[norm.assetUid] = norm;
+        } catch (e1) {}
+      }
+    } catch (e2) {
+      for (j = 0; j < part.length; j++) {
+        uid = part[j];
+        try {
+          d = tinkoffFetch(endpoint, { assets: [uid] }, { allow404: true });
+          arr = getItems_(d);
+          if (!arr.length) continue;
+
+          item = arr[0];
+          norm = _normalizeAssetFundamentalItem_(item);
+          if (norm && norm.assetUid) out[norm.assetUid] = norm;
+        } catch (e3) {}
+      }
+    }
+  }
+
+  return out;
+}
