@@ -1,9 +1,9 @@
-**
+/**
  * dashboard_portfolio.gs
  */
 
 
-"function buildPortfolioDashboard() {
+function buildPortfolioDashboard() {
   var ss = SpreadsheetApp.getActive();
   var sh;
   var startCol = 20;
