@@ -1,50 +1,2161 @@
 /**
  * dashboard_portfolio.gs
+ *
+ * Единый владелец portfolio dashboard.
+ *
+ * Что строит:
+ * - общий portfolio dashboard на листе Dashboard
+ *
+ * Какие листы читает:
+ * - Bonds
+ * - Shares
+ * - Funds
+ * - Options (только для общих totals по классам активов)
+ *
+ * Какие регионы пишет:
+ * - general: общие итоги портфеля
+ * - shares: акции
+ * - bonds: облигации
+ * - funds: фонды
+ *
+ * Публичные функции:
+ * - buildPortfolioDashboard()
+ * - renderGeneralDashboardRegion_()
+ * - renderSharesDashboardRegion_()
+ * - renderBondsDashboardRegion_()
+ * - renderFundsDashboardRegion_()
  */
 
 
-function buildPortfolioDashboard() {
-  var ss = SpreadsheetApp.getActive();
-  var sh;
-  var startCol = 20;
-  var totalRow = 1;
-  var classRow = 8;
-  var sharesRow = 17;
-  var byClass;
-  var totals;
+/* ========================================================================
+ * Layout
+ * ======================================================================== */
 
-  if (typeof buildBondsDashboard === 'function') {
-    try { buildBondsDashboard(); } catch (e) {}
+/**
+ * Карта областей Dashboard.
+ *
+ * Сетка:
+ * - general = A:J   (1..10)
+ * - gap     = K
+ * - shares  = L:U   (12..21)
+ * - gap     = V
+ * - bonds   = W:AF  (23..32)
+ * - gap     = AG
+ * - funds   = AH:AQ (34..43)
+ *
+ * По одной пустой разделительной колонке между регионами.
+ */
+var PORTFOLIO_DASHBOARD_LAYOUT = {
+  sheetName: 'Dashboard',
+  bounds: {
+    maxRows: 115,
+    maxCols: 43
+  },
+  history: {
+    // legacy-compatible block for dashboard_export.gs
+    r1: 12,
+    r2: 28,
+    c1: 1,
+    w: 3
+  },
+  regions: {
+    general: {
+      key: 'general',
+      title: 'Портфель',
+      startCol: 1,
+      width: 10,
+      startRow: 1,
+      maxRows: 115
+    },
+    shares: {
+      key: 'shares',
+      title: 'Акции',
+      startCol: 12,
+      width: 10,
+      startRow: 1,
+      maxRows: 105
+    },
+    bonds: {
+      key: 'bonds',
+      title: 'Облигации',
+      startCol: 23,
+      width: 10,
+      startRow: 1,
+      maxRows: 115
+    },
+    funds: {
+      key: 'funds',
+      title: 'Фонды',
+      startCol: 34,
+      width: 10,
+      startRow: 1,
+      maxRows: 80
+    }
+  }
+};
+
+function dashboardGetLayout_() {
+  return PORTFOLIO_DASHBOARD_LAYOUT;
+}
+
+
+/* ========================================================================
+ * Public orchestration
+ * ======================================================================== */
+
+function buildPortfolioDashboard() {
+  var lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(30000)) {
+    if (typeof showSnack_ === 'function') {
+      showSnack_('Другая операция обновляет Dashboard. Повторите позже.', 'Dashboard', 3000);
+    }
+    return;
   }
 
-  sh = ss.getSheetByName('Dashboard') || ss.insertSheet('Dashboard');
+  try {
+    var layout = dashboardGetLayout_();
+    var sh = dashboardEnsureSheet_(layout.sheetName);
+    var historySnapshot = portfolioHistorySnapshot_(sh, layout.history);
 
-  byClass = {
+    dashboardResetSheet_(sh, layout);
+
+    renderGeneralDashboardRegion_(sh, layout.regions.general, {
+      layout: layout,
+      historySnapshot: historySnapshot
+    });
+    renderSharesDashboardRegion_(sh, layout.regions.shares);
+    renderBondsDashboardRegion_(sh, layout.regions.bonds);
+    renderFundsDashboardRegion_(sh, layout.regions.funds);
+
+    dashboardAutoResizeRegions_(sh, layout);
+    SpreadsheetApp.flush();
+
+    if (typeof showSnack_ === 'function') {
+      showSnack_('Dashboard обновлён', 'Dashboard', 2000);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/* ========================================================================
+ * General region
+ * ======================================================================== */
+
+function renderGeneralDashboardRegion_(sh, region, ctx) {
+  var layout = (ctx && ctx.layout) || dashboardGetLayout_();
+  region = dashboardNormalizeRegion_(region, layout.regions.general);
+
+  dashboardClearRegion_(sh, region);
+  dashboardWriteRegionTitle_(sh, region, region.title || 'Портфель');
+
+  var data = _buildGeneralPortfolioData_();
+  var bondCompare = _buildGeneralBondCompareData_();
+
+  dashboardWriteTwoColBlock_(
+    sh,
+    region.startRow + 2,
+    region.startCol,
+    'Портфель — итого',
+    [
+      ['Инвестировано', data.totals.invested],
+      ['Рыночная стоимость', data.totals.market],
+      ['P/L (руб)', data.totals.plRub],
+      ['P/L (%)', data.totals.plPct]
+    ],
+    ['#,##0.00', '#,##0.00', '#,##0.00', '0.00%']
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    region.startRow + 2,
+    region.startCol + 3,
+    'Классы активов',
+    ['Класс', 'Бумаг', 'Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)', 'Доля портфеля'],
+    data.classRows,
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '#,##0.00',
+        6: '0.00%',
+        7: '0.00%'
+      }
+    }
+  );
+
+  var historyBlock = portfolioUpdateHistory_(
+    ctx && ctx.historySnapshot ? ctx.historySnapshot : null,
+    data.totals.invested,
+    data.totals.market,
+    layout.history
+  );
+  portfolioWriteHistoryBlock_(sh, layout.history, historyBlock);
+
+  if (bondCompare.hasData) {
+    var cmpInfo = dashboardWriteTableBlock_(
+      sh,
+      12,
+      4,
+      'YTM vs купон',
+      ['Метрика', 'Значение'],
+      [
+        ['Средневзв. YTM (%)', bondCompare.weightedYtmPct],
+        ['Купонная доходность (%)', bondCompare.weightedCouponPct]
+      ],
+      {
+        formatsByCol: {
+          2: '0.00'
+        }
+      }
+    );
+
+    if (cmpInfo && cmpInfo.dataRowsCount > 0) {
+      dashboardBuildChartFromRanges_(sh, {
+        chartType: Charts.ChartType.COLUMN,
+        title: 'YTM vs Купонная доходность (средневзв., %)',
+        anchorRow: 50,
+        anchorCol: 4,
+        ranges: [cmpInfo.tableRange],
+        width: 380,
+        height: 220,
+        options: {
+          legend: { position: 'none' }
+        }
+      });
+    }
+
+    if (bondCompare.scatterRows.length > 1) {
+      var scatterInfo = dashboardWriteTableBlock_(
+        sh,
+        12,
+        7,
+        'Риск vs YTM',
+        ['Риск', 'YTM (%)', 'Тултип'],
+        bondCompare.scatterRows.slice(1),
+        {
+          formatsByCol: {
+            1: '0.00',
+            2: '0.00'
+          }
+        }
+      );
+
+      if (scatterInfo && scatterInfo.dataRowsCount > 0) {
+        dashboardBuildChartFromRanges_(sh, {
+          chartType: Charts.ChartType.SCATTER,
+          title: 'Риск vs Доходность к погашению (YTM)',
+          anchorRow: 72,
+          anchorCol: 4,
+          ranges: [scatterInfo.tableRange],
+          width: 380,
+          height: 220,
+          options: {
+            legend: { position: 'none' },
+            hAxis: { title: 'Риск (баллы)' },
+            vAxis: { title: 'YTM (%)' },
+            series: { 0: { pointSize: 5 } }
+          }
+        });
+      }
+    }
+  }
+
+  var historyRange = sh.getRange(
+    layout.history.r1,
+    layout.history.c1,
+    layout.history.r2 - layout.history.r1 + 1,
+    layout.history.w
+  );
+
+  if (_dashboardChartRangeHasData_(historyRange)) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.LINE,
+      title: 'История портфеля: Инвестировано vs Стоимость',
+      anchorRow: 30,
+      anchorCol: 1,
+      ranges: [historyRange],
+      width: 400,
+      height: 220,
+      options: {
+        legend: { position: 'bottom' },
+        hAxis: { title: 'Дата', format: 'dd.MM' },
+        vAxis: { title: '₽' },
+        pointSize: 5,
+        series: {
+          0: { labelInLegend: 'Инвестировано', pointSize: 5 },
+          1: { labelInLegend: 'Стоимость', pointSize: 5 }
+        }
+      }
+    });
+  }
+}
+
+function _buildGeneralPortfolioData_() {
+  var byClass = {
     bonds: _readSheetTotalsByHeaders_('Bonds'),
     funds: _readSheetTotalsByHeaders_('Funds'),
     shares: _readSheetTotalsByHeaders_('Shares'),
     options: _readSheetTotalsByHeaders_('Options')
   };
 
-  totals = {
-    invested: (byClass.bonds.invested || 0) + (byClass.funds.invested || 0) + (byClass.shares.invested || 0) + (byClass.options.invested || 0),
-    market: (byClass.bonds.market || 0) + (byClass.funds.market || 0) + (byClass.shares.market || 0) + (byClass.options.market || 0),
-    plRub: (byClass.bonds.plRub || 0) + (byClass.funds.plRub || 0) + (byClass.shares.plRub || 0) + (byClass.options.plRub || 0),
-    plPct: null,
-    count: (byClass.bonds.count || 0) + (byClass.funds.count || 0) + (byClass.shares.count || 0) + (byClass.options.count || 0)
+  var totals = {
+    invested:
+      (byClass.bonds.invested || 0) +
+      (byClass.funds.invested || 0) +
+      (byClass.shares.invested || 0) +
+      (byClass.options.invested || 0),
+
+    market:
+      (byClass.bonds.market || 0) +
+      (byClass.funds.market || 0) +
+      (byClass.shares.market || 0) +
+      (byClass.options.market || 0),
+
+    plRub:
+      (byClass.bonds.plRub || 0) +
+      (byClass.funds.plRub || 0) +
+      (byClass.shares.plRub || 0) +
+      (byClass.options.plRub || 0),
+
+    count:
+      (byClass.bonds.count || 0) +
+      (byClass.funds.count || 0) +
+      (byClass.shares.count || 0) +
+      (byClass.options.count || 0),
+
+    plPct: null
   };
+
   totals.plPct = totals.invested ? totals.plRub / totals.invested : null;
 
-  _writePortfolioTotalBlock_(sh, totalRow, startCol, totals);
-  _writeAssetClassSummaryBlock_(sh, classRow, startCol, byClass, totals.market);
-  _writeSharesBlocks_(sh, sharesRow, startCol, {
+  return {
     byClass: byClass,
-    totalMarket: totals.market,
-    sharesTotals: byClass.shares
+    totals: totals,
+    classRows: [
+      _assetClassRow_('Облигации', byClass.bonds, totals.market),
+      _assetClassRow_('Фонды', byClass.funds, totals.market),
+      _assetClassRow_('Акции', byClass.shares, totals.market),
+      _assetClassRow_('Опционы', byClass.options, totals.market)
+    ]
+  };
+}
+
+function _assetClassRow_(title, totals, totalMarket) {
+  var t = totals || {};
+  var invested = _toNumberSafe_(t.invested);
+  var market = _toNumberSafe_(t.market);
+  var plRub = _toNumberSafe_(t.plRub);
+  var plPct = t.plPct != null ? t.plPct : (invested ? plRub / invested : null);
+  var share = totalMarket ? market / totalMarket : null;
+
+  return [
+    title,
+    _toNumberSafe_(t.count),
+    invested,
+    market,
+    plRub,
+    plPct,
+    share
+  ];
+}
+
+function portfolioHistorySnapshot_(sh, historyCfg) {
+  try {
+    if (!sh) return null;
+    if (sh.getLastRow() < historyCfg.r1) return null;
+    return sh.getRange(
+      historyCfg.r1,
+      historyCfg.c1,
+      historyCfg.r2 - historyCfg.r1 + 1,
+      historyCfg.w
+    ).getValues();
+  } catch (e) {
+    return null;
+  }
+}
+
+function portfolioUpdateHistory_(snapshot, investedRub, marketRub, historyCfg) {
+  var entries = [];
+  var i;
+  var d;
+  var inv;
+  var mkt;
+  var N = historyCfg.r2 - historyCfg.r1; // строк данных без header
+  var now = new Date();
+
+  if (snapshot && snapshot.length) {
+    for (i = 1; i < snapshot.length; i++) {
+      d = snapshot[i][0];
+      inv = snapshot[i][1];
+      mkt = snapshot[i][2];
+
+      if (d === '' || d == null) continue;
+
+      d = (d instanceof Date) ? d : new Date(d);
+      if (!isFinite(d.getTime())) continue;
+
+      inv = Number(inv);
+      mkt = Number(mkt);
+
+      entries.push({
+        dt: d,
+        invested: isFinite(inv) ? inv : '',
+        market: isFinite(mkt) ? mkt : ''
+      });
+    }
+  }
+
+  entries.push({
+    dt: now,
+    invested: Number(investedRub) || 0,
+    market: Number(marketRub) || 0
   });
 
-  sh.autoResizeColumns(startCol, 8);
+  if (entries.length > N) {
+    entries = entries.slice(entries.length - N);
+  }
+
+  while (entries.length < N) {
+    entries.unshift(null);
+  }
+
+  var out = [['Дата', 'Инвестировано', 'Стоимость']];
+  for (i = 0; i < entries.length; i++) {
+    if (!entries[i]) {
+      out.push(['', '', '']);
+    } else {
+      out.push([
+        entries[i].dt,
+        entries[i].invested,
+        entries[i].market
+      ]);
+    }
+  }
+
+  return out;
 }
+
+function portfolioWriteHistoryBlock_(sh, historyCfg, block) {
+  sh.getRange(
+    historyCfg.r1,
+    historyCfg.c1,
+    historyCfg.r2 - historyCfg.r1 + 1,
+    historyCfg.w
+  ).setValues(block);
+
+  sh.getRange(historyCfg.r1, historyCfg.c1, 1, historyCfg.w).setFontWeight('bold');
+  sh.getRange(historyCfg.r1 + 1, historyCfg.c1, historyCfg.r2 - historyCfg.r1, 1)
+    .setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  sh.getRange(historyCfg.r1 + 1, historyCfg.c1 + 1, historyCfg.r2 - historyCfg.r1, 2)
+    .setNumberFormat('#,##0.00');
+}
+
+
+/* ========================================================================
+ * Shares: data
+ * ======================================================================== */
+
+function loadSharesDashboardData_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName('Shares');
+
+  if (!sh) return { header: [], rows: [] };
+  if (sh.getLastRow() < 2 || sh.getLastColumn() < 1) return { header: [], rows: [] };
+
+  return {
+    header: sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0],
+    rows: sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues()
+  };
+}
+
+function mapSharesDashboardColumns_(hdr) {
+  function idx(name) {
+    var i = hdr.indexOf(name);
+    return i >= 0 ? (i + 1) : 0;
+  }
+
+  return {
+    name: idx('Название'),
+    ticker: idx('Тикер'),
+    market: idx('Рыночная стоимость'),
+    invested: idx('Инвестировано'),
+    plRub: idx('P/L (руб)'),
+    plPct: idx('P/L (%)'),
+    sector: idx('Сектор'),
+    country: idx('Страна риска'),
+    pe: idx('P/E TTM'),
+    pb: idx('P/B TTM'),
+    evEbitda: idx('EV/EBITDA'),
+    roe: idx('ROE'),
+    beta: idx('Beta')
+  };
+}
+
+function validateSharesDashboardColumns_(c) {
+  return !!(
+    c &&
+    c.name &&
+    c.ticker &&
+    c.market &&
+    c.invested &&
+    c.plRub &&
+    c.plPct &&
+    c.sector &&
+    c.country &&
+    c.pe &&
+    c.pb &&
+    c.evEbitda &&
+    c.roe &&
+    c.beta
+  );
+}
+
+function computeSharesDashboardData_(rows, c) {
+  function val(r, ci) {
+    return ci ? r[ci - 1] : '';
+  }
+
+  function toNumber_(x) {
+    if (x === null || x === '' || typeof x === 'undefined') return NaN;
+    if (typeof x === 'number') return isFinite(x) ? x : NaN;
+    if (x instanceof Date) return NaN;
+
+    var s = String(x)
+      .replace(/\u00A0/g, ' ')
+      .replace(/\s+/g, '')
+      .replace(/%/g, '')
+      .replace(',', '.')
+      .trim();
+
+    if (!s) return NaN;
+
+    var n = Number(s);
+    return isFinite(n) ? n : NaN;
+  }
+
+  function round2_(x) {
+    return Math.round(Number(x || 0) * 100) / 100;
+  }
+
+  function round4_(x) {
+    return Math.round(Number(x || 0) * 10000) / 10000;
+  }
+
+  function safeName_(x) {
+    var s = String(x == null ? '' : x).trim();
+    return s || '—';
+  }
+
+  function pushAgg_(map, name, market) {
+    map[name] = (map[name] || 0) + market;
+  }
+
+  var invested = 0;
+  var market = 0;
+  var plRub = 0;
+  var count = 0;
+
+  var items = [];
+  var sectorsMap = {};
+  var countriesMap = {};
+
+  var peArr = [];
+  var pbArr = [];
+  var evEbitdaArr = [];
+  var roeArr = [];
+  var betaArr = [];
+
+  rows.forEach(function (r) {
+    var name = safeName_(val(r, c.name));
+    var ticker = safeName_(val(r, c.ticker));
+
+    var marketVal = toNumber_(val(r, c.market));
+    var investedVal = toNumber_(val(r, c.invested));
+    var plRubVal = toNumber_(val(r, c.plRub));
+    var plPctVal = toNumber_(val(r, c.plPct));
+
+    var sector = safeName_(val(r, c.sector));
+    var country = safeName_(val(r, c.country));
+
+    var peVal = toNumber_(val(r, c.pe));
+    var pbVal = toNumber_(val(r, c.pb));
+    var evEbitdaVal = toNumber_(val(r, c.evEbitda));
+    var roeVal = toNumber_(val(r, c.roe));
+    var betaVal = toNumber_(val(r, c.beta));
+
+    var hasAnyData =
+      (name !== '—') ||
+      (ticker !== '—') ||
+      isFinite(marketVal) ||
+      isFinite(investedVal) ||
+      isFinite(plRubVal) ||
+      isFinite(plPctVal);
+
+    if (!hasAnyData) return;
+
+    count += 1;
+
+    if (isFinite(investedVal)) invested += investedVal;
+    if (isFinite(marketVal)) market += marketVal;
+    if (isFinite(plRubVal)) plRub += plRubVal;
+
+    pushAgg_(sectorsMap, sector || '—', isFinite(marketVal) ? marketVal : 0);
+    pushAgg_(countriesMap, country || '—', isFinite(marketVal) ? marketVal : 0);
+
+    if (isFinite(peVal)) peArr.push(peVal);
+    if (isFinite(pbVal)) pbArr.push(pbVal);
+    if (isFinite(evEbitdaVal)) evEbitdaArr.push(evEbitdaVal);
+    if (isFinite(roeVal)) roeArr.push(roeVal);
+    if (isFinite(betaVal)) betaArr.push(betaVal);
+
+    items.push({
+      name: name,
+      ticker: ticker,
+      market: isFinite(marketVal) ? marketVal : 0,
+      plRub: isFinite(plRubVal) ? plRubVal : 0,
+      plPct: isFinite(plPctVal) ? plPctVal : null
+    });
+  });
+
+  var totalMarket = market;
+  var plPct = invested > 0 ? (plRub / invested) : null;
+
+  var topPositions = _sortDescByField_(items, 'market').slice(0, 5);
+
+  var plItems = items.filter(function (x) {
+    return isFinite(x.plRub);
+  });
+
+  var bestPL = _sortDescByField_(plItems, 'plRub').slice(0, 5);
+  var worstPL = _sortAscByField_(plItems, 'plRub').slice(0, 5);
+
+  var sectors = Object.keys(sectorsMap).map(function (k) {
+    var m = sectorsMap[k] || 0;
+    return {
+      name: k || '—',
+      market: round2_(m),
+      sharePct: totalMarket > 0 ? round4_(m / totalMarket) : 0
+    };
+  });
+  sectors = _sortDescByField_(sectors, 'market');
+
+  var countries = Object.keys(countriesMap).map(function (k) {
+    var m = countriesMap[k] || 0;
+    return {
+      name: k || '—',
+      market: round2_(m),
+      sharePct: totalMarket > 0 ? round4_(m / totalMarket) : 0
+    };
+  });
+  countries = _sortDescByField_(countries, 'market');
+
+  topPositions = topPositions.map(function (x) {
+    return {
+      name: x.name,
+      ticker: x.ticker,
+      market: round2_(x.market),
+      plRub: round2_(x.plRub),
+      plPct: x.plPct === null ? null : round4_(x.plPct)
+    };
+  });
+
+  bestPL = bestPL.map(function (x) {
+    return {
+      name: x.name,
+      ticker: x.ticker,
+      market: round2_(x.market),
+      plRub: round2_(x.plRub),
+      plPct: x.plPct === null ? null : round4_(x.plPct)
+    };
+  });
+
+  worstPL = worstPL.map(function (x) {
+    return {
+      name: x.name,
+      ticker: x.ticker,
+      market: round2_(x.market),
+      plRub: round2_(x.plRub),
+      plPct: x.plPct === null ? null : round4_(x.plPct)
+    };
+  });
+
+  return {
+    count: count,
+    invested: round2_(invested),
+    market: round2_(market),
+    plRub: round2_(plRub),
+    plPct: plPct === null ? null : round4_(plPct),
+    topPositions: topPositions,
+    bestPL: bestPL,
+    worstPL: worstPL,
+    sectors: sectors,
+    countries: countries,
+    valuation: {
+      peMedian: _medianNumber_(peArr),
+      pbMedian: _medianNumber_(pbArr),
+      evEbitdaMedian: _medianNumber_(evEbitdaArr),
+      roeMedian: _medianNumber_(roeArr),
+      betaMedian: _medianNumber_(betaArr)
+    }
+  };
+}
+
+function _readSharesDashboardViewModel_() {
+  var raw = loadSharesDashboardData_();
+  var header = (raw && raw.header) || [];
+  var rows = (raw && raw.rows) || [];
+
+  if (!header.length || !rows.length) return null;
+
+  var c = mapSharesDashboardColumns_(header);
+  if (validateSharesDashboardColumns_(c)) {
+    var data = computeSharesDashboardData_(rows, c);
+    if (data && data.count) return data;
+  }
+
+  return _buildSharesFallbackData_(header, rows);
+}
+
+function _buildSharesFallbackData_(header, rows) {
+  function round2_(x) {
+    return Math.round(Number(x || 0) * 100) / 100;
+  }
+
+  function round4_(x) {
+    return Math.round(Number(x || 0) * 10000) / 10000;
+  }
+
+  var c = _mapGenericSharesColumns_(header);
+  var invested = 0;
+  var market = 0;
+  var plRub = 0;
+  var count = 0;
+
+  var items = [];
+  var sectorsMap = {};
+  var countriesMap = {};
+
+  var peArr = [];
+  var pbArr = [];
+  var evEbitdaArr = [];
+  var roeArr = [];
+  var betaArr = [];
+
+  rows.forEach(function (r) {
+    if (!_rowHasAnyValue_(r)) return;
+
+    var name = _safeTextByIndex_(r, c.name, '—');
+    var ticker = _safeTextByIndex_(r, c.ticker, '—');
+    var marketVal = _toNumberSafe_(_valueByIndex_(r, c.market));
+    var investedVal = _toNumberSafe_(_valueByIndex_(r, c.invested));
+    var plRubVal = _toNumberSafe_(_valueByIndex_(r, c.plRub));
+    var plPctVal = _valueByIndex_(r, c.plPct);
+
+    plPctVal = (plPctVal === '' || plPctVal == null) ? null : _toNumberSafe_(plPctVal);
+    if (plPctVal == null) plPctVal = investedVal ? plRubVal / investedVal : null;
+
+    count += 1;
+    invested += investedVal;
+    market += marketVal;
+    plRub += plRubVal;
+
+    items.push({
+      name: name,
+      ticker: ticker,
+      market: marketVal,
+      plRub: plRubVal,
+      plPct: plPctVal
+    });
+
+    _pushMarketAgg_(sectorsMap, _safeTextByIndex_(r, c.sector, '—'), marketVal);
+    _pushMarketAgg_(countriesMap, _safeTextByIndex_(r, c.country, '—'), marketVal);
+
+    _pushNumberIfFinite_(peArr, _valueByIndex_(r, c.pe));
+    _pushNumberIfFinite_(pbArr, _valueByIndex_(r, c.pb));
+    _pushNumberIfFinite_(evEbitdaArr, _valueByIndex_(r, c.evEbitda));
+    _pushNumberIfFinite_(roeArr, _valueByIndex_(r, c.roe));
+    _pushNumberIfFinite_(betaArr, _valueByIndex_(r, c.beta));
+  });
+
+  var totalMarket = market;
+  var sectors = _buildMarketShareRows_(sectorsMap, totalMarket);
+  var countries = _buildMarketShareRows_(countriesMap, totalMarket);
+  var topPositions = _sortDescByField_(items, 'market').slice(0, 5);
+  var bestPL = _sortDescByField_(items, 'plRub').slice(0, 5);
+  var worstPL = _sortAscByField_(items, 'plRub').slice(0, 5);
+
+  function normalizeItems(arr) {
+    return (arr || []).map(function (x) {
+      return {
+        name: x.name,
+        ticker: x.ticker,
+        market: round2_(x.market),
+        plRub: round2_(x.plRub),
+        plPct: x.plPct == null ? null : round4_(x.plPct)
+      };
+    });
+  }
+
+  return {
+    count: count,
+    invested: round2_(invested),
+    market: round2_(market),
+    plRub: round2_(plRub),
+    plPct: invested ? round4_(plRub / invested) : null,
+    topPositions: normalizeItems(topPositions),
+    bestPL: normalizeItems(bestPL),
+    worstPL: normalizeItems(worstPL),
+    sectors: sectors,
+    countries: countries,
+    valuation: {
+      peMedian: _medianNumber_(peArr),
+      pbMedian: _medianNumber_(pbArr),
+      evEbitdaMedian: _medianNumber_(evEbitdaArr),
+      roeMedian: _medianNumber_(roeArr),
+      betaMedian: _medianNumber_(betaArr)
+    }
+  };
+}
+
+function _mapGenericSharesColumns_(header) {
+  return {
+    name: _findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
+    ticker: _findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
+    invested: _findHeaderIndexByAliases_(header, ['Инвестировано']),
+    market: _findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
+    plRub: _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
+    plPct: _findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %']),
+    sector: _findHeaderIndexByAliases_(header, ['Сектор']),
+    country: _findHeaderIndexByAliases_(header, ['Страна', 'Country', 'Страна риска']),
+    pe: _findHeaderIndexByAliases_(header, ['P/E', 'P/E (TTM)', 'PE', 'PE TTM']),
+    pb: _findHeaderIndexByAliases_(header, ['P/B', 'PB', 'P/B TTM']),
+    evEbitda: _findHeaderIndexByAliases_(header, ['EV/EBITDA', 'evToEbitda']),
+    roe: _findHeaderIndexByAliases_(header, ['ROE', 'roe']),
+    beta: _findHeaderIndexByAliases_(header, ['Beta', 'beta'])
+  };
+}
+
+function _medianNumber_(arr) {
+  if (!arr || !arr.length) return null;
+
+  var nums = arr
+    .map(function (x) { return typeof x === 'number' ? x : Number(x); })
+    .filter(function (x) { return isFinite(x); })
+    .sort(function (a, b) { return a - b; });
+
+  if (!nums.length) return null;
+
+  var mid = Math.floor(nums.length / 2);
+  if (nums.length % 2) return nums[mid];
+  return (nums[mid - 1] + nums[mid]) / 2;
+}
+
+function _sortDescByField_(arr, field) {
+  return (arr || []).slice().sort(function (a, b) {
+    var av = Number(a && a[field]);
+    var bv = Number(b && b[field]);
+    var aOk = isFinite(av);
+    var bOk = isFinite(bv);
+
+    if (!aOk && !bOk) return 0;
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    return bv - av;
+  });
+}
+
+function _sortAscByField_(arr, field) {
+  return (arr || []).slice().sort(function (a, b) {
+    var av = Number(a && a[field]);
+    var bv = Number(b && b[field]);
+    var aOk = isFinite(av);
+    var bOk = isFinite(bv);
+
+    if (!aOk && !bOk) return 0;
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    return av - bv;
+  });
+}
+
+
+/* ========================================================================
+ * Shares: render
+ * ======================================================================== */
+
+function renderSharesDashboardRegion_(sh, region) {
+  region = dashboardNormalizeRegion_(region, dashboardGetLayout_().regions.shares);
+
+  dashboardClearRegion_(sh, region);
+  dashboardWriteRegionTitle_(sh, region, region.title || 'Акции');
+
+  var data = _readSharesDashboardViewModel_();
+  if (!data || !data.count) {
+    dashboardWritePlaceholder_(sh, region, 'Нет данных по акциям');
+    return;
+  }
+
+  dashboardWriteTwoColBlock_(
+    sh,
+    _regionRow_(region, 3),
+    region.startCol,
+    'Акции — итого',
+    [
+      ['Инвестировано', data.invested],
+      ['Рыночная стоимость', data.market],
+      ['P/L (руб)', data.plRub],
+      ['P/L (%)', data.plPct]
+    ],
+    ['#,##0.00', '#,##0.00', '#,##0.00', '0.00%']
+  );
+
+  var topPositionsRows = (data.topPositions || []).slice(0, 5).map(function (item) {
+    return [item.name || '—', item.ticker || '—', item.market, item.plRub, item.plPct];
+  });
+  if (!topPositionsRows.length) topPositionsRows = [['Нет данных', '', '', '', '']];
+
+  var topPositionsInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 10),
+    region.startCol,
+    'Акции — топ-5 по позиции',
+    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
+    topPositionsRows,
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '0.00%'
+      }
+    }
+  );
+
+  var bestPLRows = (data.bestPL || []).slice(0, 5).map(function (item) {
+    return [item.name || '—', item.ticker || '—', item.market, item.plRub, item.plPct];
+  });
+  if (!bestPLRows.length) bestPLRows = [['Нет данных', '', '', '', '']];
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 19),
+    region.startCol,
+    'Акции — топ-5 по P/L',
+    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
+    bestPLRows,
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '0.00%'
+      }
+    }
+  );
+
+  var worstPLRows = (data.worstPL || []).slice(0, 5).map(function (item) {
+    return [item.name || '—', item.ticker || '—', item.market, item.plRub, item.plPct];
+  });
+  if (!worstPLRows.length) worstPLRows = [['Нет данных', '', '', '', '']];
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 28),
+    region.startCol,
+    'Акции — топ-5 убыток',
+    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
+    worstPLRows,
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '0.00%'
+      }
+    }
+  );
+
+  var sectorsRows = (data.sectors || []).slice(0, 5).map(function (item) {
+    return [item.name || '—', item.market, item.sharePct];
+  });
+  var hasSectorsRows = sectorsRows.length > 0;
+  if (!sectorsRows.length) sectorsRows = [['Нет данных', '', '']];
+
+  var sectorsInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 37),
+    region.startCol,
+    'Акции — по секторам',
+    ['Сектор', 'Рыночная стоимость', 'Доля акций'],
+    sectorsRows,
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  var countriesRows = (data.countries || []).slice(0, 5).map(function (item) {
+    return [item.name || '—', item.market, item.sharePct];
+  });
+  if (!countriesRows.length) countriesRows = [['Нет данных', '', '']];
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 47),
+    region.startCol,
+    'Акции — по странам',
+    ['Страна', 'Рыночная стоимость', 'Доля акций'],
+    countriesRows,
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 57),
+    region.startCol,
+    'Акции — valuation snapshot',
+    ['Метрика', 'Значение'],
+    _sharesValuationRowsFromData_(data),
+    {}
+  );
+
+  if (hasSectorsRows) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.PIE,
+      title: 'Акции — структура по секторам',
+      anchorRow: _regionRow_(region, 66),
+      anchorCol: region.startCol,
+      ranges: [
+        sh.getRange(
+          sectorsInfo.headerRow,
+          region.startCol,
+          1 + sectorsInfo.dataRowsCount,
+          2
+        )
+      ],
+      width: 400,
+      height: 220,
+      options: {
+        legend: { position: 'right' },
+        pieSliceText: 'value'
+      }
+    });
+  }
+
+  if ((data.topPositions || []).length) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.BAR,
+      title: 'Акции — топ-5 по позиции',
+      anchorRow: _regionRow_(region, 86),
+      anchorCol: region.startCol,
+      ranges: [
+        sh.getRange(topPositionsInfo.headerRow, region.startCol, 1 + topPositionsInfo.dataRowsCount, 1),
+        sh.getRange(topPositionsInfo.headerRow, region.startCol + 2, 1 + topPositionsInfo.dataRowsCount, 1)
+      ],
+      width: 400,
+      height: 220,
+      options: {
+        legend: { position: 'none' },
+        hAxis: { format: '#,##0.00' },
+        bars: 'horizontal'
+      }
+    });
+  }
+}
+
+function _sharesValuationRowsFromData_(data) {
+  var v = (data && data.valuation) || {};
+
+  return [
+    ['Median P/E', v.peMedian != null ? v.peMedian : ''],
+    ['Median P/B', v.pbMedian != null ? v.pbMedian : ''],
+    ['Median EV/EBITDA', v.evEbitdaMedian != null ? v.evEbitdaMedian : ''],
+    ['Median ROE', v.roeMedian != null ? v.roeMedian : ''],
+    ['Median Beta', v.betaMedian != null ? v.betaMedian : '']
+  ];
+}
+
+
+/* ========================================================================
+ * Bonds: data + calculations
+ * ======================================================================== */
+
+function _loadBondsRegionData_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName('Bonds');
+
+  if (!sh) return { header: [], rows: [] };
+  if (sh.getLastRow() < 2 || sh.getLastColumn() < 1) return { header: [], rows: [] };
+
+  return {
+    header: sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0],
+    rows: sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues()
+  };
+}
+
+function _mapBondsRegionColumns_(hdr) {
+  function idx() {
+    var i;
+    for (i = 0; i < arguments.length; i++) {
+      var k = hdr.indexOf(arguments[i]);
+      if (k >= 0) return k + 1;
+    }
+    return 0;
+  }
+
+  return {
+    name: idx('Название'),
+    figi: idx('FIGI'),
+    riskNum: idx('Риск (ручн.)'),
+    sector: idx('Сектор'),
+    qty: idx('Кол-во'),
+    price: idx('Текущая цена'),
+    nominal: idx('Номинал'),
+    couponPerYear: idx('купон/год'),
+    couponValue: idx('Размер купона'),
+    couponPct: idx('Купон, %'),
+    maturity: idx('Дата погашения'),
+    nextCoupon: idx('Следующий купон'),
+    market: idx('Рыночная стоимость'),
+    invested: idx('Инвестировано'),
+    plRub: idx('P/L (руб)'),
+    plPct: idx('P/L (%)')
+  };
+}
+
+function _computeBondsTotals_(rows, c) {
+  var invested = 0;
+  var market = 0;
+  var plRub = 0;
+
+  rows.forEach(function (r) {
+    var inv = _bondNumber_(r, c.invested);
+    var mkt = _bondNumber_(r, c.market);
+    var pl = _bondNumber_(r, c.plRub);
+
+    if (isFinite(inv)) invested += inv;
+    if (isFinite(mkt)) market += mkt;
+    if (isFinite(pl)) plRub += pl;
+  });
+
+  return {
+    invested: _bondRound2_(invested),
+    market: _bondRound2_(market),
+    plRub: _bondRound2_(plRub),
+    plPct: invested > 0 ? _bondRound4_(plRub / invested) : null
+  };
+}
+
+function _computeBondsTopYtm_(rows, c, now) {
+  var out = [];
+
+  rows.forEach(function (r) {
+    var name = _bondText_(r, c.name);
+    var figi = _bondText_(r, c.figi);
+    var price = _bondNumber_(r, c.price);
+    var nominal = _bondNumber_(r, c.nominal);
+    var couponPerYear = _bondNumber_(r, c.couponPerYear);
+    var couponValue = _bondNumber_(r, c.couponValue);
+    var maturity = _bondDate_(r, c.maturity);
+
+    if (!name || !figi) return;
+    if (!isFinite(price) || price <= 0) return;
+    if (!isFinite(nominal) || nominal <= 0) return;
+    if (!isFinite(couponPerYear) || couponPerYear <= 0) return;
+    if (!isFinite(couponValue) || couponValue < 0) return;
+    if (!maturity) return;
+
+    var yearsToMatRaw = (_bondStripDate_(maturity) - _bondStripDate_(now)) / (365 * 24 * 3600 * 1000);
+    if (!isFinite(yearsToMatRaw) || yearsToMatRaw < 0) return;
+
+    var yearsToMat = Math.max(0.25, yearsToMatRaw);
+    var annualCoupon = couponValue * couponPerYear;
+    var ytm = (annualCoupon + (nominal - price) / yearsToMat) / ((nominal + price) / 2);
+
+    if (!isFinite(ytm)) return;
+
+    out.push({
+      name: name,
+      figi: figi,
+      ytm: ytm,
+      years: yearsToMat
+    });
+  });
+
+  out.sort(function (a, b) {
+    return (b.ytm || -1e9) - (a.ytm || -1e9);
+  });
+
+  return out.slice(0, 5).map(function (x) {
+    return {
+      name: x.name,
+      figi: x.figi,
+      ytm: _bondRound4_(x.ytm),
+      years: _bondRound2_(x.years)
+    };
+  });
+}
+
+function _computeBondsTopPl_(rows, c, asc) {
+  var out = [];
+
+  rows.forEach(function (r) {
+    var name = _bondText_(r, c.name);
+    var invested = _bondNumber_(r, c.invested);
+    var plRub = _bondNumber_(r, c.plRub);
+
+    if (!name) return;
+    if (!isFinite(invested) || invested <= 0) return;
+    if (!isFinite(plRub)) return;
+
+    out.push({
+      name: name,
+      plRub: plRub,
+      plPct: plRub / invested
+    });
+  });
+
+  out.sort(function (a, b) {
+    return asc ? (a.plRub - b.plRub) : (b.plRub - a.plRub);
+  });
+
+  return out.slice(0, 5).map(function (x) {
+    return {
+      name: x.name,
+      plRub: _bondRound2_(x.plRub),
+      plPct: _bondRound4_(x.plPct)
+    };
+  });
+}
+
+function _computeBondsSectorSummary_(rows, c) {
+  var map = {};
+
+  rows.forEach(function (r) {
+    var sector = _bondText_(r, c.sector) || '—';
+    var market = _bondNumber_(r, c.market);
+    var plRub = _bondNumber_(r, c.plRub);
+
+    if (!map[sector]) {
+      map[sector] = { sector: sector, market: 0, plRub: 0 };
+    }
+
+    if (isFinite(market)) map[sector].market += market;
+    if (isFinite(plRub)) map[sector].plRub += plRub;
+  });
+
+  var arr = Object.keys(map).map(function (k) {
+    return {
+      sector: map[k].sector,
+      market: _bondRound2_(map[k].market),
+      plRub: _bondRound2_(map[k].plRub)
+    };
+  });
+
+  arr.sort(function (a, b) {
+    return (b.market || 0) - (a.market || 0);
+  });
+
+  return arr.slice(0, 8);
+}
+
+function _computeBondsMaturitySummary_(rows, c, now) {
+  var map = {};
+
+  rows.forEach(function (r) {
+    var dt = _bondDate_(r, c.maturity);
+    var market = _bondNumber_(r, c.market);
+
+    if (!dt) return;
+    if (!isFinite(market)) return;
+    if (_bondStripDate_(dt) < _bondStripDate_(now)) return;
+
+    var year = dt.getFullYear();
+    map[year] = (map[year] || 0) + market;
+  });
+
+  var arr = Object.keys(map).map(function (y) {
+    return {
+      year: Number(y),
+      market: _bondRound2_(map[y])
+    };
+  });
+
+  arr.sort(function (a, b) {
+    return a.year - b.year;
+  });
+
+  return arr.slice(0, 7);
+}
+
+function _computeBondsCoupon6mSummary_(rows, c, now) {
+  var start = _bondStripDate_(now);
+  var horizon = _bondAddMonths_(start, 6);
+
+  var months = [];
+  var monthMap = {};
+  var i;
+
+  for (i = 0; i < 6; i++) {
+    var d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    var key = d.getFullYear() + '-' + _bondPad2_(d.getMonth() + 1);
+    months.push(key);
+    monthMap[key] = 0;
+  }
+
+  rows.forEach(function (r) {
+    var qty = _bondNumber_(r, c.qty);
+    var couponPerYear = _bondNumber_(r, c.couponPerYear);
+    var couponValue = _bondNumber_(r, c.couponValue);
+    var nextCoupon = _bondDate_(r, c.nextCoupon);
+
+    if (!isFinite(qty) || qty <= 0) return;
+    if (!isFinite(couponPerYear) || couponPerYear <= 0) return;
+    if (!isFinite(couponValue) || couponValue <= 0) return;
+    if (!nextCoupon) return;
+
+    var periodDays = Math.max(15, Math.round(365 / couponPerYear));
+    var d2 = _bondStripDate_(nextCoupon);
+
+    while (d2 <= horizon) {
+      if (d2 >= start) {
+        var key = d2.getFullYear() + '-' + _bondPad2_(d2.getMonth() + 1);
+        if (monthMap.hasOwnProperty(key)) {
+          monthMap[key] += couponValue * qty;
+        }
+      }
+      d2 = _bondAddDays_(d2, periodDays);
+    }
+  });
+
+  return months.map(function (key) {
+    return {
+      month: key,
+      amount: _bondRound2_(monthMap[key] || 0)
+    };
+  });
+}
+
+function _buildGeneralBondCompareData_() {
+  var data = _loadBondsRegionData_();
+  if (!data || !data.rows || !data.rows.length) {
+    return {
+      hasData: false,
+      weightedYtmPct: 0,
+      weightedCouponPct: 0,
+      scatterRows: [['Риск', 'YTM (%)', 'Тултип']]
+    };
+  }
+
+  var c = _mapBondsRegionColumns_(data.header);
+  var now = new Date();
+
+  var wCouponNum = 0;
+  var wCouponDen = 0;
+  var wYtmNum = 0;
+  var wYtmDen = 0;
+  var scatterRows = [['Риск', 'YTM (%)', 'Тултип']];
+
+  data.rows.forEach(function (r) {
+    var riskNum = _bondNumber_(r, c.riskNum);
+    var name = _bondText_(r, c.name);
+    var figi = _bondText_(r, c.figi);
+    var market = _bondNumber_(r, c.market);
+    var price = _bondNumber_(r, c.price);
+    var nominal = _bondNumber_(r, c.nominal);
+    var couponPerYear = _bondNumber_(r, c.couponPerYear);
+    var couponValue = _bondNumber_(r, c.couponValue);
+    var couponPct = _bondNumber_(r, c.couponPct);
+    var maturity = _bondDate_(r, c.maturity);
+
+    if (!isFinite(couponPct)) {
+      if (isFinite(price) && price > 0 && isFinite(couponPerYear) && couponPerYear > 0 && isFinite(couponValue) && couponValue >= 0) {
+        couponPct = (couponValue * couponPerYear) / price * 100;
+      }
+    }
+
+    if (isFinite(couponPct) && isFinite(market) && market > 0) {
+      wCouponNum += couponPct * market;
+      wCouponDen += market;
+    }
+
+    if (isFinite(price) && price > 0 &&
+        isFinite(nominal) && nominal > 0 &&
+        isFinite(couponPerYear) && couponPerYear > 0 &&
+        isFinite(couponValue) && couponValue >= 0 &&
+        maturity) {
+      var yearsToMatRaw = (_bondStripDate_(maturity) - _bondStripDate_(now)) / (365 * 24 * 3600 * 1000);
+      if (isFinite(yearsToMatRaw) && yearsToMatRaw >= 0) {
+        var yearsToMat = Math.max(0.25, yearsToMatRaw);
+        var annualCoupon = couponValue * couponPerYear;
+        var ytmPct = ((annualCoupon + (nominal - price) / yearsToMat) / ((nominal + price) / 2)) * 100;
+
+        if (isFinite(ytmPct)) {
+          if (isFinite(market) && market > 0) {
+            wYtmNum += ytmPct * market;
+            wYtmDen += market;
+          }
+
+          if (isFinite(riskNum)) {
+            scatterRows.push([
+              riskNum,
+              _bondRound2_(ytmPct),
+              (name || '—') + '\n' + (figi || '') + '\nYTM: ' + _bondRound2_(ytmPct) + '%'
+            ]);
+          }
+        }
+      }
+    }
+  });
+
+  return {
+    hasData: wCouponDen > 0 || wYtmDen > 0 || scatterRows.length > 1,
+    weightedYtmPct: wYtmDen > 0 ? _bondRound2_(wYtmNum / wYtmDen) : 0,
+    weightedCouponPct: wCouponDen > 0 ? _bondRound2_(wCouponNum / wCouponDen) : 0,
+    scatterRows: scatterRows
+  };
+}
+
+
+/* ========================================================================
+ * Bonds: render
+ * ======================================================================== */
+
+function renderBondsDashboardRegion_(sh, region) {
+  region = dashboardNormalizeRegion_(region, dashboardGetLayout_().regions.bonds);
+
+  dashboardClearRegion_(sh, region);
+  dashboardWriteRegionTitle_(sh, region, region.title || 'Облигации');
+
+  var data = _loadBondsRegionData_();
+  if (!data.rows.length) {
+    dashboardWritePlaceholder_(sh, region, 'Нет данных по облигациям');
+    return;
+  }
+
+  var c = _mapBondsRegionColumns_(data.header);
+  var now = new Date();
+
+  var totals = _computeBondsTotals_(data.rows, c);
+  var topYtm = _computeBondsTopYtm_(data.rows, c, now);
+  var topPl = _computeBondsTopPl_(data.rows, c, false);
+  var worstPl = _computeBondsTopPl_(data.rows, c, true);
+  var sectors = _computeBondsSectorSummary_(data.rows, c);
+  var maturity = _computeBondsMaturitySummary_(data.rows, c, now);
+  var coupon6m = _computeBondsCoupon6mSummary_(data.rows, c, now);
+
+  dashboardWriteTwoColBlock_(
+    sh,
+    _regionRow_(region, 3),
+    region.startCol,
+    'Облигации — итого',
+    [
+      ['Инвестировано', totals.invested],
+      ['Рыночная стоимость', totals.market],
+      ['P/L (руб)', totals.plRub],
+      ['P/L (%)', totals.plPct]
+    ],
+    ['#,##0.00', '#,##0.00', '#,##0.00', '0.00%']
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 10),
+    region.startCol,
+    'Облигации — top YTM',
+    ['Бумага', 'YTM (%)', 'До погашения (лет)', 'FIGI'],
+    topYtm.map(function (x) {
+      return [x.name, x.ytm, x.years, x.figi];
+    }),
+    {
+      formatsByCol: {
+        2: '0.00%',
+        3: '0.00'
+      }
+    }
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 19),
+    region.startCol,
+    'Облигации — top P/L',
+    ['Бумага', 'P/L (руб)', 'P/L (%)'],
+    topPl.map(function (x) {
+      return [x.name, x.plRub, x.plPct];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 28),
+    region.startCol,
+    'Облигации — worst P/L',
+    ['Бумага', 'P/L (руб)', 'P/L (%)'],
+    worstPl.map(function (x) {
+      return [x.name, x.plRub, x.plPct];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 37),
+    region.startCol,
+    'Облигации — по секторам',
+    ['Сектор', 'Рыночная стоимость', 'P/L (руб)'],
+    sectors.map(function (x) {
+      return [x.sector, x.market, x.plRub];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '#,##0.00'
+      }
+    }
+  );
+
+  var maturityInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 47),
+    region.startCol,
+    'Облигации — по сроку',
+    ['Год', 'Рыночная стоимость'],
+    maturity.map(function (x) {
+      return [x.year, x.market];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00'
+      }
+    }
+  );
+
+  var couponInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 56),
+    region.startCol,
+    'Облигации — купоны 6м',
+    ['Месяц', 'Выплаты'],
+    coupon6m.map(function (x) {
+      return [x.month, x.amount];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00'
+      }
+    }
+  );
+
+  if (maturityInfo && maturityInfo.dataRowsCount > 0) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.COLUMN,
+      title: 'Облигации — сроки погашения',
+      anchorRow: _regionRow_(region, 66),
+      anchorCol: region.startCol,
+      ranges: [maturityInfo.tableRange],
+      width: 420,
+      height: 220,
+      options: {
+        legend: { position: 'none' }
+      }
+    });
+  }
+
+  if (couponInfo && couponInfo.dataRowsCount > 0) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.LINE,
+      title: 'Облигации — купоны 6м',
+      anchorRow: _regionRow_(region, 86),
+      anchorCol: region.startCol,
+      ranges: [couponInfo.tableRange],
+      width: 420,
+      height: 220,
+      options: {
+        legend: { position: 'none' }
+      }
+    });
+  }
+}
+
+
+/* ========================================================================
+ * Funds: data + calculations
+ * ======================================================================== */
+
+function _loadFundsRegionData_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName('Funds');
+
+  if (!sh) return { header: [], rows: [] };
+  if (sh.getLastRow() < 2 || sh.getLastColumn() < 1) return { header: [], rows: [] };
+
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+
+  rows = rows.filter(function (r) {
+    return _rowHasAnyValue_(r);
+  });
+
+  return { header: header, rows: rows };
+}
+
+function _mapFundsRegionColumns_(header) {
+  return {
+    name: _findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
+    ticker: _findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
+    sector: _findHeaderIndexByAliases_(header, ['Сектор', 'Категория', 'Тема', 'Фокус']),
+    currency: _findHeaderIndexByAliases_(header, ['Валюта', 'Currency']),
+    invested: _findHeaderIndexByAliases_(header, ['Инвестировано']),
+    market: _findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
+    plRub: _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
+    plPct: _findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %'])
+  };
+}
+
+function _computeFundsTotals_(rows, cols) {
+  var invested = 0;
+  var market = 0;
+  var plRub = 0;
+
+  rows.forEach(function (row) {
+    var inv = _toNumberSafe_(_valueByIndex_(row, cols.invested));
+    var mkt = _toNumberSafe_(_valueByIndex_(row, cols.market));
+    var pl = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (mkt - inv);
+
+    invested += inv;
+    market += mkt;
+    plRub += pl;
+  });
+
+  return {
+    invested: invested,
+    market: market,
+    plRub: plRub,
+    plPct: invested !== 0 ? (plRub / invested) : 0
+  };
+}
+
+function _computeFundsTopByMarket_(rows, cols, limit) {
+  return rows
+    .map(function (row) {
+      var invested = _toNumberSafe_(_valueByIndex_(row, cols.invested));
+      var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+      var plRub = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (market - invested);
+
+      return {
+        name: _safeTextByIndex_(row, cols.name, '—'),
+        ticker: _safeTextByIndex_(row, cols.ticker, '—'),
+        invested: invested,
+        market: market,
+        plRub: plRub,
+        plPct: invested !== 0 ? (plRub / invested) : 0
+      };
+    })
+    .filter(function (x) {
+      return x.name !== '—' || x.market !== 0 || x.plRub !== 0;
+    })
+    .sort(function (a, b) {
+      return b.market - a.market;
+    })
+    .slice(0, limit || 5);
+}
+
+function _computeFundsTopByPl_(rows, cols, limit) {
+  return rows
+    .map(function (row) {
+      var invested = _toNumberSafe_(_valueByIndex_(row, cols.invested));
+      var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+      var plRub = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (market - invested);
+
+      return {
+        name: _safeTextByIndex_(row, cols.name, '—'),
+        ticker: _safeTextByIndex_(row, cols.ticker, '—'),
+        invested: invested,
+        market: market,
+        plRub: plRub,
+        plPct: invested !== 0 ? (plRub / invested) : 0
+      };
+    })
+    .filter(function (x) {
+      return x.name !== '—' || x.market !== 0 || x.plRub !== 0;
+    })
+    .sort(function (a, b) {
+      return b.plRub - a.plRub;
+    })
+    .slice(0, limit || 5);
+}
+
+function _computeFundsSectorSummary_(rows, cols) {
+  var totalMarket = 0;
+  var map = {};
+
+  rows.forEach(function (row) {
+    var sector = _safeTextByIndex_(row, cols.sector, '—');
+    var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+
+    totalMarket += market;
+    map[sector] = (map[sector] || 0) + market;
+  });
+
+  return Object.keys(map)
+    .map(function (sector) {
+      var market = map[sector];
+      return {
+        sector: sector,
+        market: market,
+        share: totalMarket !== 0 ? (market / totalMarket) : 0
+      };
+    })
+    .sort(function (a, b) {
+      return b.market - a.market;
+    });
+}
+
+function _computeFundsCurrencySummary_(rows, cols) {
+  var totalMarket = 0;
+  var map = {};
+
+  rows.forEach(function (row) {
+    var currency = _safeTextByIndex_(row, cols.currency, '—');
+    var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+
+    totalMarket += market;
+    map[currency] = (map[currency] || 0) + market;
+  });
+
+  return Object.keys(map)
+    .map(function (currency) {
+      var market = map[currency];
+      return {
+        currency: currency,
+        market: market,
+        share: totalMarket !== 0 ? (market / totalMarket) : 0
+      };
+    })
+    .sort(function (a, b) {
+      return b.market - a.market;
+    });
+}
+
+
+/* ========================================================================
+ * Funds: render
+ * ======================================================================== */
+
+function renderFundsDashboardRegion_(sh, region) {
+  region = dashboardNormalizeRegion_(region, dashboardGetLayout_().regions.funds);
+
+  dashboardClearRegion_(sh, region);
+  dashboardWriteRegionTitle_(sh, region, region.title || 'Фонды');
+
+  var data = _loadFundsRegionData_();
+  if (!data || !data.rows || !data.rows.length) {
+    dashboardWritePlaceholder_(sh, region, 'Нет данных по фондам');
+    return;
+  }
+
+  var cols = _mapFundsRegionColumns_(data.header);
+  var totals = _computeFundsTotals_(data.rows, cols);
+  var topByMarket = _computeFundsTopByMarket_(data.rows, cols, 5);
+  var topByPl = _computeFundsTopByPl_(data.rows, cols, 5);
+  var bySector = _computeFundsSectorSummary_(data.rows, cols);
+  var byCurrency = _computeFundsCurrencySummary_(data.rows, cols);
+
+  dashboardWriteTwoColBlock_(
+    sh,
+    _regionRow_(region, 3),
+    region.startCol,
+    'Фонды — итого',
+    [
+      ['Инвестировано', totals.invested],
+      ['Рыночная стоимость', totals.market],
+      ['P/L (руб)', totals.plRub],
+      ['P/L (%)', totals.plPct]
+    ],
+    ['#,##0.00', '#,##0.00', '#,##0.00', '0.00%']
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 10),
+    region.startCol,
+    'Фонды — top-5 по позиции',
+    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
+    topByMarket.map(function (x) {
+      return [x.name, x.ticker, x.market, x.plRub, x.plPct];
+    }),
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '0.00%'
+      }
+    }
+  );
+
+  dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 19),
+    region.startCol,
+    'Фонды — top-5 по P/L',
+    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
+    topByPl.map(function (x) {
+      return [x.name, x.ticker, x.market, x.plRub, x.plPct];
+    }),
+    {
+      formatsByCol: {
+        3: '#,##0.00',
+        4: '#,##0.00',
+        5: '0.00%'
+      }
+    }
+  );
+
+  var sectorInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 28),
+    region.startCol,
+    'Фонды — по секторам',
+    ['Сектор', 'Рыночная стоимость', 'Доля фондов'],
+    bySector.map(function (x) {
+      return [x.sector, x.market, x.share];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  var currencyInfo = dashboardWriteTableBlock_(
+    sh,
+    _regionRow_(region, 38),
+    region.startCol,
+    'Фонды — по валютам',
+    ['Валюта', 'Рыночная стоимость', 'Доля фондов'],
+    byCurrency.map(function (x) {
+      return [x.currency, x.market, x.share];
+    }),
+    {
+      formatsByCol: {
+        2: '#,##0.00',
+        3: '0.00%'
+      }
+    }
+  );
+
+  if (sectorInfo && sectorInfo.dataRowsCount > 0) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.PIE,
+      title: 'Фонды — структура',
+      anchorRow: _regionRow_(region, 48),
+      anchorCol: region.startCol,
+      ranges: [
+        sh.getRange(sectorInfo.headerRow, region.startCol, 1 + sectorInfo.dataRowsCount, 2)
+      ],
+      width: 420,
+      height: 220,
+      options: {
+        legend: { position: 'right' }
+      }
+    });
+  } else if (currencyInfo && currencyInfo.dataRowsCount > 0) {
+    dashboardBuildChartFromRanges_(sh, {
+      chartType: Charts.ChartType.PIE,
+      title: 'Фонды — структура',
+      anchorRow: _regionRow_(region, 48),
+      anchorCol: region.startCol,
+      ranges: [
+        sh.getRange(currencyInfo.headerRow, region.startCol, 1 + currencyInfo.dataRowsCount, 2)
+      ],
+      width: 420,
+      height: 220,
+      options: {
+        legend: { position: 'right' }
+      }
+    });
+  }
+}
+
+
+/* ========================================================================
+ * Common dashboard render helpers
+ * ======================================================================== */
+
+function dashboardEnsureSheet_(sheetName) {
+  var ss = SpreadsheetApp.getActive();
+  return ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+}
+
+function dashboardNormalizeRegion_(region, defaults) {
+  region = region || {};
+  defaults = defaults || {};
+
+  return {
+    key: region.key || defaults.key || '',
+    title: region.title || defaults.title || '',
+    startCol: Number(region.startCol) || Number(defaults.startCol) || 1,
+    width: Number(region.width) || Number(defaults.width) || 1,
+    startRow: Number(region.startRow) || Number(defaults.startRow) || 1,
+    maxRows: Number(region.maxRows) || Number(defaults.maxRows) || 50
+  };
+}
+
+function dashboardResetSheet_(sh, layout) {
+  var maxRows = Math.max(sh.getLastRow(), layout.bounds.maxRows);
+  var maxCols = Math.max(sh.getLastColumn(), layout.bounds.maxCols);
+  var rng;
+
+  if (maxRows < 1 || maxCols < 1) return;
+
+  rng = sh.getRange(1, 1, maxRows, maxCols);
+
+  try { rng.breakApart(); } catch (e1) {}
+  rng.clearContent();
+  rng.clearFormat();
+  try { rng.clearDataValidations(); } catch (e2) {}
+  try { rng.clearNote(); } catch (e3) {}
+
+  var charts = sh.getCharts() || [];
+  var i;
+  for (i = charts.length - 1; i >= 0; i--) {
+    sh.removeChart(charts[i]);
+  }
+}
+
+function dashboardClearRegion_(sh, region) {
+  var rng = sh.getRange(region.startRow, region.startCol, region.maxRows, region.width);
+
+  try { rng.breakApart(); } catch (e1) {}
+  rng.clearContent();
+  rng.clearFormat();
+  try { rng.clearDataValidations(); } catch (e2) {}
+  try { rng.clearNote(); } catch (e3) {}
+
+  dashboardRemoveChartsInRegion_(sh, region);
+}
+
+function dashboardRemoveChartsInRegion_(sh, region) {
+  var rowMin = region.startRow;
+  var rowMax = region.startRow + region.maxRows - 1;
+  var colMin = region.startCol;
+  var colMax = region.startCol + region.width - 1;
+
+  var charts = sh.getCharts() || [];
+  var i;
+
+  for (i = charts.length - 1; i >= 0; i--) {
+    try {
+      var info = charts[i].getContainerInfo();
+      var r = info.getAnchorRow();
+      var c = info.getAnchorColumn();
+
+      if (r >= rowMin && r <= rowMax && c >= colMin && c <= colMax) {
+        sh.removeChart(charts[i]);
+      }
+    } catch (e) {}
+  }
+}
+
+function dashboardWriteRegionTitle_(sh, region, title) {
+  var rng = sh.getRange(region.startRow, region.startCol, 1, region.width);
+
+  try { rng.breakApart(); } catch (e) {}
+  rng.merge();
+  rng
+    .setValue(title)
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle')
+    .setBackground('#E5E7EB');
+}
+
+function dashboardWritePlaceholder_(sh, region, text) {
+  dashboardWriteRegionTitle_(sh, region, region.title || region.key || 'Раздел');
+
+  var rng = sh.getRange(region.startRow + 2, region.startCol, 1, region.width);
+  try { rng.breakApart(); } catch (e) {}
+  rng.merge();
+  rng
+    .setValue(text)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+}
+
+function dashboardWriteTwoColBlock_(sh, startRow, startCol, title, rows, valueFormats) {
+  sh.getRange(startRow, startCol, 1, 2)
+    .setValues([[title, '']])
+    .setFontWeight('bold');
+
+  if (!rows || !rows.length) {
+    return {
+      titleRow: startRow,
+      dataStartRow: startRow + 1,
+      dataRowsCount: 0
+    };
+  }
+
+  sh.getRange(startRow + 1, startCol, rows.length, 2).setValues(rows);
+  sh.getRange(startRow + 1, startCol, rows.length, 1).setFontWeight('bold');
+  sh.getRange(startRow + 1, startCol + 1, rows.length, 1).setHorizontalAlignment('right');
+
+  var i;
+  for (i = 0; i < (valueFormats || []).length; i++) {
+    if (!valueFormats[i]) continue;
+    sh.getRange(startRow + 1 + i, startCol + 1, 1, 1).setNumberFormat(valueFormats[i]);
+  }
+
+  return {
+    titleRow: startRow,
+    dataStartRow: startRow + 1,
+    dataRowsCount: rows.length
+  };
+}
+
+function dashboardWriteTableBlock_(sh, startRow, startCol, title, headers, rows, opts) {
+  opts = opts || {};
+  rows = rows || [];
+
+  var width = headers.length;
+  var titleRow = [];
+  var i;
+  for (i = 0; i < width; i++) {
+    titleRow.push(i === 0 ? title : '');
+  }
+
+  sh.getRange(startRow, startCol, 1, width)
+    .setValues([titleRow])
+    .setFontWeight('bold');
+
+  sh.getRange(startRow + 1, startCol, 1, width)
+    .setValues([headers])
+    .setFontWeight('bold');
+
+  if (rows.length) {
+    sh.getRange(startRow + 2, startCol, rows.length, width).setValues(rows);
+  }
+
+  var formatsByCol = opts.formatsByCol || {};
+  Object.keys(formatsByCol).forEach(function (key) {
+    var colIndex = Number(key);
+    if (!isFinite(colIndex) || colIndex < 1 || colIndex > width) return;
+    if (!rows.length) return;
+
+    sh.getRange(startRow + 2, startCol + colIndex - 1, rows.length, 1)
+      .setNumberFormat(formatsByCol[key]);
+  });
+
+  return {
+    titleRow: startRow,
+    headerRow: startRow + 1,
+    dataStartRow: startRow + 2,
+    dataRowsCount: rows.length,
+    tableRange: sh.getRange(startRow + 1, startCol, 1 + rows.length, width)
+  };
+}
+
+function dashboardBuildChartFromRanges_(sh, cfg) {
+  if (!cfg || !cfg.ranges || !cfg.ranges.length) return null;
+
+  var builder = sh.newChart()
+    .setChartType(cfg.chartType || Charts.ChartType.COLUMN)
+    .setPosition(cfg.anchorRow || 1, cfg.anchorCol || 1, 0, 0)
+    .setOption('title', cfg.title || '')
+    .setOption('width', Math.min(Number(cfg.width) || 400, 420))
+    .setOption('height', Math.min(Number(cfg.height) || 220, 220));
+
+  var i;
+  for (i = 0; i < cfg.ranges.length; i++) {
+    builder.addRange(cfg.ranges[i]);
+  }
+
+  var options = cfg.options || {};
+  for (var k in options) {
+    if (!options.hasOwnProperty(k)) continue;
+    builder.setOption(k, options[k]);
+  }
+
+  var chart = builder.build();
+  sh.insertChart(chart);
+  return chart;
+}
+
+function dashboardAutoResizeRegions_(sh, layout) {
+  var regions = layout.regions;
+  var keys = Object.keys(regions);
+  var i;
+
+  for (i = 0; i < keys.length; i++) {
+    sh.autoResizeColumns(regions[keys[i]].startCol, regions[keys[i]].width);
+  }
+
+  try { sh.setColumnWidth(11, 22); } catch (e1) {}
+  try { sh.setColumnWidth(22, 22); } catch (e2) {}
+  try { sh.setColumnWidth(33, 22); } catch (e3) {}
+}
+
+function _dashboardChartRangeHasData_(range) {
+  try {
+    if (!range) return false;
+    if (range.getNumRows() < 2 || range.getNumColumns() < 2) return false;
+
+    var vals = range.getDisplayValues();
+    var hasHeader = false;
+    var hasData = false;
+    var r;
+    var c;
+
+    for (c = 0; c < vals[0].length; c++) {
+      if (String(vals[0][c] || '').trim()) {
+        hasHeader = true;
+        break;
+      }
+    }
+
+    for (r = 1; r < vals.length; r++) {
+      for (c = 0; c < vals[r].length; c++) {
+        if (String(vals[r][c] || '').trim()) {
+          hasData = true;
+          break;
+        }
+      }
+      if (hasData) break;
+    }
+
+    return hasHeader && hasData;
+  } catch (e) {
+    return false;
+  }
+}
+
+function _regionRow_(region, relativeRow) {
+  return region.startRow + relativeRow - 1;
+}
+
+
+/* ========================================================================
+ * Primitive helpers
+ * ======================================================================== */
 
 function _readSheetTotalsByHeaders_(sheetName) {
   var ss = SpreadsheetApp.getActive();
@@ -73,6 +2184,7 @@ function _readSheetTotalsByHeaders_(sheetName) {
 
   for (i = 0; i < rows.length; i++) {
     if (!_rowHasAnyValue_(rows[i])) continue;
+
     out.count += 1;
     if (idxInvested >= 0) out.invested += _toNumberSafe_(rows[i][idxInvested]);
     if (idxMarket >= 0) out.market += _toNumberSafe_(rows[i][idxMarket]);
@@ -83,466 +2195,26 @@ function _readSheetTotalsByHeaders_(sheetName) {
   return out;
 }
 
-function _writePortfolioTotalBlock_(sh, row, col, totals) {
-  var values = [
-    ['Портфель — итого', ''],
-    ['Инвестировано', totals && totals.invested != null ? totals.invested : 0],
-    ['Рыночная стоимость', totals && totals.market != null ? totals.market : 0],
-    ['P/L (руб)', totals && totals.plRub != null ? totals.plRub : 0],
-    ['P/L (%)', totals && totals.plPct != null ? totals.plPct : '']
-  ];
-
-  sh.getRange(row, col, values.length, 2).setValues(values);
-  sh.getRange(row, col, 1, 2).setFontWeight('bold');
-  sh.getRange(row + 1, col + 1, 3, 1).setNumberFormat('#,##0.00');
-  sh.getRange(row + 4, col + 1, 1, 1).setNumberFormat('0.00%');
-}
-
-function _writeAssetClassSummaryBlock_(sh, row, col, byClass, totalMarket) {
-  var titleWidth = 7;
-  var header = ['Класс', 'Бумаг', 'Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)', 'Доля портфеля'];
-  var rows = [
-    _assetClassRow_('Облигации', byClass && byClass.bonds, totalMarket),
-    _assetClassRow_('Фонды', byClass && byClass.funds, totalMarket),
-    _assetClassRow_('Акции', byClass && byClass.shares, totalMarket),
-    _assetClassRow_('Опционы', byClass && byClass.options, totalMarket)
-  ];
-
-  sh.getRange(row, col, 1, titleWidth).setValues([['Классы активов', '', '', '', '', '', '']]);
-  sh.getRange(row, col, 1, titleWidth).setFontWeight('bold');
-  sh.getRange(row + 1, col, 1, header.length).setValues([header]);
-  sh.getRange(row + 1, col, 1, header.length).setFontWeight('bold');
-  sh.getRange(row + 2, col, rows.length, header.length).setValues(rows);
-  sh.getRange(row + 2, col + 2, rows.length, 3).setNumberFormat('#,##0.00');
-  sh.getRange(row + 2, col + 5, rows.length, 2).setNumberFormat('0.00%');
-}
-
-function _writeSharesBlocks_(sh, row, col, data) {
-  var ss = SpreadsheetApp.getActive();
-  var sharesSheet = ss.getSheetByName('Shares');
-  var sharesData;
-  var rows;
-  var currentRow = row;
-
-  if (!sharesSheet || sharesSheet.getLastRow() < 2 || sharesSheet.getLastColumn() < 1) {
-    _writeTextBlock_(sh, currentRow, col, 'Акции', 'Нет данных по акциям', 4);
-    return currentRow + 4;
-  }
-
-  if (!(typeof loadSharesDashboardData_ === 'function' &&
-        typeof mapSharesDashboardColumns_ === 'function' &&
-        typeof validateSharesDashboardColumns_ === 'function' &&
-        typeof computeSharesDashboardData_ === 'function')) {
-    _writeTextBlock_(sh, currentRow, col, 'Акции', 'Shares helpers not found', 4);
-    return currentRow + 4;
-  }
-
-  sharesData = _prepareSharesDashboardBlocksData_(sharesSheet, data || {});
-  if (!sharesData || !sharesData.hasData) {
-    _writeTextBlock_(sh, currentRow, col, 'Акции', 'Нет данных по акциям', 4);
-    return currentRow + 4;
-  }
-
-  rows = [
-    ['Инвестировано', sharesData.totals.invested],
-    ['Рыночная стоимость', sharesData.totals.market],
-    ['P/L (руб)', sharesData.totals.plRub],
-    ['P/L (%)', sharesData.totals.plPct]
-  ];
-  _writeLabelValueBlock_(sh, currentRow, col, 'Акции — итого', rows, [1, 2, 3], [4]);
-  currentRow += rows.length + 3;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — топ-5 по позиции',
-    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
-    _mapTopPositionRows_(sharesData.topPosition),
-    [2, 3],
-    [4]
-  );
-  currentRow += _blockHeight_(sharesData.topPosition, 5) + 2;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — топ-5 по P/L',
-    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
-    _mapTopPlRows_(sharesData.topProfit),
-    [2, 3],
-    [4]
-  );
-  currentRow += _blockHeight_(sharesData.topProfit, 5) + 2;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — топ-5 убыток',
-    ['Бумага', 'Тикер', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)'],
-    _mapTopPlRows_(sharesData.topLoss),
-    [2, 3],
-    [4]
-  );
-  currentRow += _blockHeight_(sharesData.topLoss, 5) + 2;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — по секторам',
-    ['Сектор', 'Бумаг', 'Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)', 'Доля акций'],
-    _mapGroupRows_(sharesData.sectors),
-    [2, 3, 4],
-    [5, 6]
-  );
-  currentRow += _blockHeight_(sharesData.sectors, 7) + 2;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — по странам',
-    ['Страна', 'Бумаг', 'Инвестировано', 'Рыночная стоимость', 'P/L (руб)', 'P/L (%)', 'Доля акций'],
-    _mapGroupRows_(sharesData.countries),
-    [2, 3, 4],
-    [5, 6]
-  );
-  currentRow += _blockHeight_(sharesData.countries, 7) + 2;
-
-  _writeDataTableBlock_(
-    sh,
-    currentRow,
-    col,
-    'Акции — valuation snapshot',
-    ['Метрика', 'Значение'],
-    sharesData.valuation && sharesData.valuation.length ? sharesData.valuation : [['Нет данных', '']],
-    [],
-    []
-  );
-
-  return currentRow;
-}
-
-function _assetClassRow_(title, totals, totalMarket) {
-  var t = totals || {};
-  var share = totalMarket ? (_toNumberSafe_(t.market) / totalMarket) : null;
-  return [
-    title,
-    _toNumberSafe_(t.count),
-    _toNumberSafe_(t.invested),
-    _toNumberSafe_(t.market),
-    _toNumberSafe_(t.plRub),
-    t.plPct != null ? t.plPct : (_toNumberSafe_(t.invested) ? _toNumberSafe_(t.plRub) / _toNumberSafe_(t.invested) : null),
-    share
-  ];
-}
-
-function _writeTextBlock_(sh, row, col, title, text, width) {
-  var w = width || 2;
-  var titleRow = [];
-  var i;
-
-  for (i = 0; i < w; i++) titleRow.push(i === 0 ? title : '');
-  sh.getRange(row, col, 1, w).setValues([titleRow]);
-  sh.getRange(row, col, 1, w).setFontWeight('bold');
-  sh.getRange(row + 1, col, 1, w).setValues([[text, '', '', ''].slice(0, w)]);
-}
-
-function _writeLabelValueBlock_(sh, row, col, title, rows, moneyRowIndexes, pctRowIndexes) {
-  var values = [[title, '']].concat(rows || []);
-  var i;
-
-  sh.getRange(row, col, values.length, 2).setValues(values);
-  sh.getRange(row, col, 1, 2).setFontWeight('bold');
-
-  moneyRowIndexes = moneyRowIndexes || [];
-  for (i = 0; i < moneyRowIndexes.length; i++) {
-    sh.getRange(row + moneyRowIndexes[i], col + 1, 1, 1).setNumberFormat('#,##0.00');
-  }
-
-  pctRowIndexes = pctRowIndexes || [];
-  for (i = 0; i < pctRowIndexes.length; i++) {
-    sh.getRange(row + pctRowIndexes[i], col + 1, 1, 1).setNumberFormat('0.00%');
-  }
-}
-
-function _writeDataTableBlock_(sh, row, col, title, header, rows, moneyCols, pctCols) {
-  var width = header.length;
-  var titleRow = [];
-  var body = rows && rows.length ? rows : [_emptyDataRow_(width)];
-  var i;
-
-  for (i = 0; i < width; i++) titleRow.push(i === 0 ? title : '');
-
-  sh.getRange(row, col, 1, width).setValues([titleRow]);
-  sh.getRange(row, col, 1, width).setFontWeight('bold');
-  sh.getRange(row + 1, col, 1, width).setValues([header]);
-  sh.getRange(row + 1, col, 1, width).setFontWeight('bold');
-  sh.getRange(row + 2, col, body.length, width).setValues(body);
-
-  moneyCols = moneyCols || [];
-  for (i = 0; i < moneyCols.length; i++) {
-    sh.getRange(row + 2, col + moneyCols[i], body.length, 1).setNumberFormat('#,##0.00');
-  }
-
-  pctCols = pctCols || [];
-  for (i = 0; i < pctCols.length; i++) {
-    sh.getRange(row + 2, col + pctCols[i], body.length, 1).setNumberFormat('0.00%');
-  }
-}
-
-function _blockHeight_(rows, width) {
-  var len = rows && rows.length ? rows.length : 1;
-  return 2 + len;
-}
-
-function _emptyDataRow_(width) {
-  var row = [];
-  var i;
-  for (i = 0; i < width; i++) row.push(i === 0 ? 'Нет данных' : '');
-  return row;
-}
-
-function _prepareSharesDashboardBlocksData_(sharesSheet, data) {
-  var loaded;
-  var mapped;
-  var valid;
-  var computed;
-  var normalizedLoaded;
-  var fallback;
-
-  fallback = _buildSharesFallbackData_(sharesSheet, data || {});
-
-  loaded = _tryCallVariants_(loadSharesDashboardData_, [
-    [sharesSheet],
-    [],
-    [sharesSheet.getName()],
-    [SpreadsheetApp.getActive()]
-  ]);
-  normalizedLoaded = _normalizeLoadedSheetData_(loaded, sharesSheet);
-
-  mapped = _tryCallVariants_(mapSharesDashboardColumns_, [
-    [normalizedLoaded.header],
-    [normalizedLoaded],
-    [normalizedLoaded.header || []]
-  ]);
-
-  valid = _tryCallVariants_(validateSharesDashboardColumns_, [
-    [mapped],
-    [normalizedLoaded.header, mapped],
-    [normalizedLoaded, mapped]
-  ]);
-
-  if (valid === false) return fallback;
-
-  computed = _tryCallVariants_(computeSharesDashboardData_, [
-    [normalizedLoaded.rows, mapped],
-    [normalizedLoaded, mapped],
-    [normalizedLoaded.rows, mapped, normalizedLoaded],
-    [normalizedLoaded],
-    [sharesSheet, normalizedLoaded, mapped]
-  ]);
-
-  return _mergeSharesComputedWithFallback_(computed, normalizedLoaded, fallback, data || {});
-}
-
-function _buildSharesFallbackData_(sharesSheet, data) {
-  var loaded = _normalizeLoadedSheetData_(null, sharesSheet);
-  var cols = _mapGenericSharesColumns_(loaded.header);
-  var totals = { invested: 0, market: 0, plRub: 0, plPct: null, count: 0 };
-  var positions = [];
-  var sectors = {};
-  var countries = {};
-  var valuationAgg = {
-    pe: { sum: 0, w: 0 },
-    ps: { sum: 0, w: 0 },
-    pb: { sum: 0, w: 0 },
-    ev: { sum: 0, w: 0 },
-    roe: { sum: 0, w: 0 },
-    debt: { sum: 0, w: 0 },
-    beta: { sum: 0, w: 0 }
-  };
-  var i;
-  var r;
-  var name;
-  var ticker;
-  var invested;
-  var market;
-  var plRub;
-  var plPct;
-  var sector;
-  var country;
-  var weight;
-
-  for (i = 0; i < loaded.rows.length; i++) {
-    r = loaded.rows[i];
-    if (!_rowHasAnyValue_(r)) continue;
-
-    ticker = _firstNonEmpty_([
-      _valueByCol_(r, cols.ticker),
-      ''
-    ]);
-    name = _firstNonEmpty_([
-      _valueByCol_(r, cols.name),
-      ticker,
-      '—'
-    ]);
-    invested = _toNumberSafe_(_valueByCol_(r, cols.invested));
-    market = _toNumberSafe_(_valueByCol_(r, cols.market));
-    plRub = _toNumberSafe_(_valueByCol_(r, cols.plRub));
-    plPct = _valueByCol_(r, cols.plPct);
-    plPct = plPct === '' || plPct == null ? null : _toNumberSafe_(plPct);
-    if (plPct == null) plPct = invested ? plRub / invested : null;
-    sector = _firstNonEmpty_([_valueByCol_(r, cols.sector), '—']);
-    country = _firstNonEmpty_([_valueByCol_(r, cols.country), '—']);
-
-    totals.count += 1;
-    totals.invested += invested;
-    totals.market += market;
-    totals.plRub += plRub;
-
-    positions.push({
-      name: String(name),
-      ticker: String(ticker),
-      invested: invested,
-      market: market,
-      plRub: plRub,
-      plPct: plPct,
-      share: null
-    });
-
-    _accumulateGroup_(sectors, sector, invested, market, plRub);
-    _accumulateGroup_(countries, country, invested, market, plRub);
-
-    weight = market > 0 ? market : 0;
-    _accumulateWeightedMetric_(valuationAgg.pe, _valueByCol_(r, cols.pe), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.ps, _valueByCol_(r, cols.ps), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.pb, _valueByCol_(r, cols.pb), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.ev, _valueByCol_(r, cols.ev), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.roe, _valueByCol_(r, cols.roe), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.debt, _valueByCol_(r, cols.debt), weight, false);
-    _accumulateWeightedMetric_(valuationAgg.beta, _valueByCol_(r, cols.beta), weight, false);
-  }
-
-  totals.plPct = totals.invested ? totals.plRub / totals.invested : null;
-  _finalizePositionShares_(positions, totals.market);
-
-  return {
-    hasData: totals.count > 0,
-    totals: totals,
-    topPosition: _takeTop_(positions, 'market', 5, true),
-    topProfit: _takeTop_(positions, 'plRub', 5, true),
-    topLoss: _takeTop_(positions, 'plRub', 5, false),
-    sectors: _finalizeGroups_(sectors, totals.market),
-    countries: _finalizeGroups_(countries, totals.market),
-    valuation: _buildValuationRowsFromAgg_(valuationAgg)
-  };
-}
-
-function _mergeSharesComputedWithFallback_(computed, loaded, fallback, data) {
-  var totals = _extractSharesTotals_(computed, fallback.totals);
-  var topPosition = _extractSharesArray_(computed, [
-    'topPosition', 'topPositions', 'topByPosition', 'top5ByPosition', 'largestPositions'
-  ]);
-  var topProfit = _extractSharesArray_(computed, [
-    'topProfit', 'topPl', 'topByPl', 'bestPl', 'bestPL', 'top5Pl'
-  ]);
-  var topLoss = _extractSharesArray_(computed, [
-    'topLoss', 'worstPl', 'worstPL', 'worstByPl', 'top5Loss'
-  ]);
-  var sectors = _extractSharesArray_(computed, [
-    'sectors', 'bySector', 'sectorSummary', 'sectorRows'
-  ]);
-  var countries = _extractSharesArray_(computed, [
-    'countries', 'byCountry', 'countrySummary', 'countryRows'
-  ]);
-  var valuation = _extractValuationRows_(computed);
-
-  return {
-    hasData: totals.count > 0,
-    totals: totals,
-    topPosition: topPosition && topPosition.length ? _normalizeTopPositionArray_(topPosition, totals.market) : fallback.topPosition,
-    topProfit: topProfit && topProfit.length ? _normalizeTopPlArray_(topProfit) : fallback.topProfit,
-    topLoss: topLoss && topLoss.length ? _normalizeTopPlArray_(topLoss) : fallback.topLoss,
-    sectors: sectors && sectors.length ? _normalizeGroupArray_(sectors, totals.market) : fallback.sectors,
-    countries: countries && countries.length ? _normalizeGroupArray_(countries, totals.market) : fallback.countries,
-    valuation: valuation && valuation.length ? valuation : fallback.valuation
-  };
-}
-
-function _normalizeLoadedSheetData_(loaded, sheet) {
-  var data;
-  var out = { header: [], rows: [] };
-
-  if (loaded && loaded.header && loaded.rows) {
-    out.header = loaded.header || [];
-    out.rows = loaded.rows || [];
-    return out;
-  }
-
-  if (loaded && loaded.headers && loaded.rows) {
-    out.header = loaded.headers || [];
-    out.rows = loaded.rows || [];
-    return out;
-  }
-
-  if (_isArray_(loaded) && loaded.length && _isArray_(loaded[0])) {
-    out.header = loaded[0] || [];
-    out.rows = loaded.slice(1);
-    return out;
-  }
-
-  data = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
-  out.header = data && data.length ? data[0] : [];
-  out.rows = data && data.length > 1 ? data.slice(1) : [];
-  return out;
-}
-
-function _mapGenericSharesColumns_(header) {
-  return {
-    name: _findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
-    ticker: _findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
-    invested: _findHeaderIndexByAliases_(header, ['Инвестировано']),
-    market: _findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
-    plRub: _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
-    plPct: _findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %']),
-    sector: _findHeaderIndexByAliases_(header, ['Сектор']),
-    country: _findHeaderIndexByAliases_(header, ['Страна', 'Country', 'Страна риска']),
-    pe: _findHeaderIndexByAliases_(header, ['P/E', 'P/E (TTM)', 'PE', 'PE TTM', 'peRatioTtm']),
-    ps: _findHeaderIndexByAliases_(header, ['P/S', 'P/S (TTM)', 'PS', 'PS TTM', 'priceToSalesTtm']),
-    pb: _findHeaderIndexByAliases_(header, ['P/B', 'PB', 'priceToBookTtm']),
-    ev: _findHeaderIndexByAliases_(header, ['EV/EBITDA', 'evToEbitda']),
-    roe: _findHeaderIndexByAliases_(header, ['ROE', 'roe']),
-    debt: _findHeaderIndexByAliases_(header, ['Debt/Equity', 'debtToEquity']),
-    beta: _findHeaderIndexByAliases_(header, ['Beta', 'beta'])
-  };
-}
-
 function _findHeaderIndexByAliases_(header, aliases) {
-  var normalized = [];
+  var normalizedHeader = [];
   var i;
   var j;
-  var h;
-  var a;
 
-  for (i = 0; i < header.length; i++) normalized.push(_normalizeHeaderText_(header[i]));
+  for (i = 0; i < header.length; i++) {
+    normalizedHeader.push(_normalizeHeaderText_(header[i]));
+  }
 
   for (j = 0; j < aliases.length; j++) {
-    a = _normalizeHeaderText_(aliases[j]);
-    for (i = 0; i < normalized.length; i++) {
-      h = normalized[i];
-      if (h === a) return i;
+    var alias = _normalizeHeaderText_(aliases[j]);
+    for (i = 0; i < normalizedHeader.length; i++) {
+      if (normalizedHeader[i] === alias) return i;
     }
   }
 
   for (j = 0; j < aliases.length; j++) {
-    a = _normalizeHeaderText_(aliases[j]);
-    for (i = 0; i < normalized.length; i++) {
-      h = normalized[i];
-      if (h && a && h.indexOf(a) >= 0) return i;
+    alias = _normalizeHeaderText_(aliases[j]);
+    for (i = 0; i < normalizedHeader.length; i++) {
+      if (normalizedHeader[i] && alias && normalizedHeader[i].indexOf(alias) >= 0) return i;
     }
   }
 
@@ -560,314 +2232,145 @@ function _normalizeHeaderText_(value) {
 function _toNumberSafe_(value) {
   var s;
   var n;
+
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return isNaN(value) ? 0 : value;
   if (typeof value === 'boolean') return value ? 1 : 0;
+
   s = String(value).replace(/\s+/g, '').replace(',', '.');
   n = Number(s);
+
   return isNaN(n) ? 0 : n;
 }
 
 function _rowHasAnyValue_(row) {
   var i;
   if (!row) return false;
+
   for (i = 0; i < row.length; i++) {
     if (row[i] !== '' && row[i] != null) return true;
   }
   return false;
 }
 
-function _isArray_(x) {
-  return Object.prototype.toString.call(x) === '[object Array]';
-}
-
-function _valueByCol_(row, idx) {
-  if (idx == null || idx < 0) return '';
+function _valueByIndex_(row, idx) {
+  if (idx == null || idx < 0 || idx >= row.length) return '';
   return row[idx];
 }
 
-function _firstNonEmpty_(arr) {
-  var i;
-  for (i = 0; i < arr.length; i++) {
-    if (arr[i] !== '' && arr[i] != null) return arr[i];
-  }
-  return '';
+function _safeTextByIndex_(row, idx, fallback) {
+  var s = String(_valueByIndex_(row, idx) == null ? '' : _valueByIndex_(row, idx)).trim();
+  return s || (fallback || '');
 }
 
-function _accumulateGroup_(bucket, key, invested, market, plRub) {
-  var k = String(key == null || key === '' ? '—' : key);
-  if (!bucket[k]) bucket[k] = { name: k, count: 0, invested: 0, market: 0, plRub: 0, plPct: null, share: null };
-  bucket[k].count += 1;
-  bucket[k].invested += invested || 0;
-  bucket[k].market += market || 0;
-  bucket[k].plRub += plRub || 0;
+function _pushNumberIfFinite_(arr, value) {
+  var n = Number(value);
+  if (isFinite(n)) arr.push(n);
 }
 
-function _finalizeGroups_(bucket, totalMarket) {
-  var out = [];
-  var k;
-  for (k in bucket) {
-    if (!bucket.hasOwnProperty(k)) continue;
-    bucket[k].plPct = bucket[k].invested ? bucket[k].plRub / bucket[k].invested : null;
-    bucket[k].share = totalMarket ? bucket[k].market / totalMarket : null;
-    out.push(bucket[k]);
-  }
-  out.sort(function (a, b) { return (b.market || 0) - (a.market || 0); });
-  return out;
+function _pushMarketAgg_(map, key, market) {
+  key = String(key == null || key === '' ? '—' : key);
+  map[key] = (map[key] || 0) + (Number(market) || 0);
 }
 
-function _finalizePositionShares_(positions, totalMarket) {
-  var i;
-  for (i = 0; i < positions.length; i++) {
-    positions[i].share = totalMarket ? (positions[i].market || 0) / totalMarket : null;
-  }
+function _buildMarketShareRows_(map, totalMarket) {
+  return Object.keys(map)
+    .map(function (key) {
+      return {
+        name: key,
+        market: Math.round(Number(map[key] || 0) * 100) / 100,
+        sharePct: totalMarket ? (Number(map[key] || 0) / totalMarket) : 0
+      };
+    })
+    .sort(function (a, b) {
+      return b.market - a.market;
+    });
 }
 
-function _takeTop_(arr, field, limit, desc) {
-  var out = (arr || []).slice();
-  out.sort(function (a, b) {
-    var av = _toNumberSafe_(a[field]);
-    var bv = _toNumberSafe_(b[field]);
-    return desc ? (bv - av) : (av - bv);
-  });
-  return out.slice(0, limit || 5);
+
+/* ---------- Bonds primitive helpers ---------- */
+
+function _bondValue_(r, ci) {
+  return ci ? r[ci - 1] : '';
 }
 
-function _accumulateWeightedMetric_(agg, value, weight, allowNegative) {
-  var n = _toNumberSafe_(value);
-  if (!weight || isNaN(n)) return;
-  if (!allowNegative && n <= 0) return;
-  agg.sum += n * weight;
-  agg.w += weight;
+function _bondText_(r, ci) {
+  var v = _bondValue_(r, ci);
+  return String(v == null ? '' : v).trim();
 }
 
-function _buildValuationRowsFromAgg_(agg) {
-  return [
-    ['P/E (TTM)', agg.pe.w ? agg.pe.sum / agg.pe.w : 'n/a'],
-    ['P/S (TTM)', agg.ps.w ? agg.ps.sum / agg.ps.w : 'n/a'],
-    ['P/B', agg.pb.w ? agg.pb.sum / agg.pb.w : 'n/a'],
-    ['EV/EBITDA', agg.ev.w ? agg.ev.sum / agg.ev.w : 'n/a'],
-    ['ROE', agg.roe.w ? agg.roe.sum / agg.roe.w : 'n/a'],
-    ['Debt/Equity', agg.debt.w ? agg.debt.sum / agg.debt.w : 'n/a'],
-    ['Beta', agg.beta.w ? agg.beta.sum / agg.beta.w : 'n/a']
-  ];
+function _bondNumber_(r, ci) {
+  var x = _bondValue_(r, ci);
+
+  if (x === null || x === '' || typeof x === 'undefined') return NaN;
+  if (typeof x === 'number') return isFinite(x) ? x : NaN;
+  if (x instanceof Date) return NaN;
+
+  var s = String(x)
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, '')
+    .replace(/%/g, '')
+    .replace(',', '.')
+    .trim();
+
+  if (!s) return NaN;
+
+  var n = Number(s);
+  return isFinite(n) ? n : NaN;
 }
 
-function _tryCallVariants_(fn, variants) {
-  var i;
-  if (typeof fn !== 'function') return null;
-  for (i = 0; i < variants.length; i++) {
-    try {
-      return fn.apply(null, variants[i]);
-    } catch (e) {}
-  }
-  return null;
-}
-
-function _extractSharesTotals_(computed, fallbackTotals) {
-  var t = _pickFirstExisting_(computed, ['totals', 'total', 'summary', 'kpi', 'shareTotals']);
-  var invested;
-  var market;
-  var plRub;
-  var count;
-  var plPct;
-
-  if (!t) return fallbackTotals;
-
-  invested = _pickNumber_(t, ['invested', 'totalInvested', 'sumInvested', 'investedRub']);
-  market = _pickNumber_(t, ['market', 'marketValue', 'totalMarket', 'marketRub']);
-  plRub = _pickNumber_(t, ['plRub', 'pl', 'profitRub', 'pnlRub']);
-  count = _pickNumber_(t, ['count', 'items', 'positionsCount', 'paperCount']);
-  plPct = _pickNullableNumber_(t, ['plPct', 'profitPct', 'pnlPct']);
-
-  if (!count) count = fallbackTotals.count;
-  if (plPct == null) plPct = invested ? plRub / invested : null;
-
-  return {
-    invested: invested,
-    market: market,
-    plRub: plRub,
-    plPct: plPct,
-    count: count
-  };
-}
-
-function _extractSharesArray_(computed, keys) {
-  var i;
-  var arr;
-  if (!computed) return null;
-  for (i = 0; i < keys.length; i++) {
-    arr = computed[keys[i]];
-    if (_isArray_(arr)) return arr;
-  }
-  return null;
-}
-
-function _extractValuationRows_(computed) {
-  var v = _pickFirstExisting_(computed, ['valuation', 'valuationSnapshot', 'snapshot', 'multiples', 'valuationRows']);
-  var rows = [];
-  var i;
-  var keys;
-  var key;
-
+function _bondDate_(r, ci) {
+  var v = _bondValue_(r, ci);
   if (!v) return null;
 
-  if (_isArray_(v)) {
-    for (i = 0; i < v.length; i++) {
-      if (_isArray_(v[i])) {
-        rows.push([v[i][0], v[i][1]]);
-      } else if (typeof v[i] === 'object' && v[i]) {
-        rows.push([_firstNonEmpty_([v[i].metric, v[i].name, 'Метрика']), _firstNonEmpty_([v[i].value, v[i].val, ''])]);
-      }
+  if (v instanceof Date) {
+    return isFinite(v.getTime()) ? v : null;
+  }
+
+  if (typeof v === 'string') {
+    var s = v.trim();
+
+    var m1 = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (m1) {
+      var d1 = new Date(Number(m1[3]), Number(m1[2]) - 1, Number(m1[1]));
+      return isFinite(d1.getTime()) ? d1 : null;
     }
-    return rows;
+
+    var m2 = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m2) {
+      var d2 = new Date(Number(m2[1]), Number(m2[2]) - 1, Number(m2[3]));
+      return isFinite(d2.getTime()) ? d2 : null;
+    }
+
+    var parsed = new Date(s);
+    return isFinite(parsed.getTime()) ? parsed : null;
   }
 
-  keys = ['pe', 'peTtm', 'ps', 'psTtm', 'pb', 'evToEbitda', 'roe', 'debtToEquity', 'beta'];
-  for (i = 0; i < keys.length; i++) {
-    key = keys[i];
-    if (v[key] != null) rows.push([key, v[key]]);
-  }
-  return rows.length ? rows : null;
-}
-
-function _pickFirstExisting_(obj, keys) {
-  var i;
-  if (!obj) return null;
-  for (i = 0; i < keys.length; i++) {
-    if (obj[keys[i]] != null) return obj[keys[i]];
-  }
   return null;
 }
 
-function _pickNumber_(obj, keys) {
-  var i;
-  for (i = 0; i < keys.length; i++) {
-    if (obj && obj[keys[i]] != null && obj[keys[i]] !== '') return _toNumberSafe_(obj[keys[i]]);
-  }
-  return 0;
+function _bondStripDate_(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-function _pickNullableNumber_(obj, keys) {
-  var i;
-  for (i = 0; i < keys.length; i++) {
-    if (obj && obj[keys[i]] != null && obj[keys[i]] !== '') return _toNumberSafe_(obj[keys[i]]);
-  }
-  return null;
+function _bondAddDays_(d, days) {
+  var x = new Date(d.getTime());
+  x.setDate(x.getDate() + days);
+  return x;
 }
 
-function _normalizeTopPositionArray_(arr, totalMarket) {
-  var out = [];
-  var i;
-  var x;
-  var market;
-  var plRub;
-  for (i = 0; i < arr.length; i++) {
-    x = arr[i] || {};
-    market = _pickNumber_(x, ['market', 'marketValue', 'position', 'value']);
-    plRub = _pickNumber_(x, ['plRub', 'pl', 'profitRub', 'pnlRub']);
-    out.push({
-      name: String(_firstNonEmpty_([x.name, x.title, x.companyName, x.instrument, x.ticker, x.symbol, '—'])),
-      ticker: String(_firstNonEmpty_([x.ticker, x.symbol, x.code, ''])),
-      market: market,
-      plRub: plRub,
-      share: x.share != null ? _toNumberSafe_(x.share) : (totalMarket ? market / totalMarket : null),
-      plPct: _pickNullableNumber_(x, ['plPct', 'profitPct', 'pnlPct'])
-    });
-  }
-  out.sort(function (a, b) { return (b.market || 0) - (a.market || 0); });
-  return out.slice(0, 5);
+function _bondAddMonths_(d, months) {
+  return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
 }
 
-function _normalizeTopPlArray_(arr) {
-  var out = [];
-  var i;
-  var x;
-  for (i = 0; i < arr.length; i++) {
-    x = arr[i] || {};
-    out.push({
-      name: String(_firstNonEmpty_([x.name, x.title, x.companyName, x.instrument, x.ticker, x.symbol, '—'])),
-      ticker: String(_firstNonEmpty_([x.ticker, x.symbol, x.code, ''])),
-      market: _pickNumber_(x, ['market', 'marketValue', 'position', 'value']),
-      plRub: _pickNumber_(x, ['plRub', 'pl', 'profitRub', 'pnlRub', 'value']),
-      plPct: _pickNullableNumber_(x, ['plPct', 'profitPct', 'pnlPct'])
-    });
-  }
-  return out.slice(0, 5);
+function _bondPad2_(n) {
+  return ('0' + n).slice(-2);
 }
 
-function _normalizeGroupArray_(arr, totalMarket) {
-  var out = [];
-  var i;
-  var x;
-  var market;
-  var invested;
-  var plRub;
-  for (i = 0; i < arr.length; i++) {
-    x = arr[i] || {};
-    market = _pickNumber_(x, ['market', 'marketValue', 'value']);
-    invested = _pickNumber_(x, ['invested', 'totalInvested']);
-    plRub = _pickNumber_(x, ['plRub', 'pl', 'profitRub', 'pnlRub']);
-    out.push({
-      name: String(_firstNonEmpty_([x.name, x.sec, x.sector, x.country, x.title, '—'])),
-      count: _pickNumber_(x, ['count', 'items', 'papers']),
-      invested: invested,
-      market: market,
-      plRub: plRub,
-      plPct: x.plPct != null ? _toNumberSafe_(x.plPct) : (invested ? plRub / invested : null),
-      share: x.share != null ? _toNumberSafe_(x.share) : (totalMarket ? market / totalMarket : null)
-    });
-  }
-  out.sort(function (a, b) { return (b.market || 0) - (a.market || 0); });
-  return out;
+function _bondRound2_(x) {
+  return Math.round(Number(x || 0) * 100) / 100;
 }
 
-function _mapTopPositionRows_(arr) {
-  var rows = [];
-  var i;
-  if (!arr || !arr.length) return [['Нет данных', '', '', '', '']];
-  for (i = 0; i < arr.length; i++) {
-    rows.push([
-      arr[i].name,
-      arr[i].ticker || '',
-      arr[i].market,
-      arr[i].plRub,
-      arr[i].plPct
-    ]);
-  }
-  return rows;
-}
-
-function _mapTopPlRows_(arr) {
-  var rows = [];
-  var i;
-  if (!arr || !arr.length) return [['Нет данных', '', '', '', '']];
-  for (i = 0; i < arr.length; i++) {
-    rows.push([
-      arr[i].name,
-      arr[i].ticker || '',
-      arr[i].market,
-      arr[i].plRub,
-      arr[i].plPct
-    ]);
-  }
-  return rows;
-}
-
-function _mapGroupRows_(arr) {
-  var rows = [];
-  var i;
-  if (!arr || !arr.length) return [['Нет данных', '', '', '', '', '', '']];
-  for (i = 0; i < arr.length; i++) {
-    rows.push([
-      arr[i].name,
-      arr[i].count,
-      arr[i].invested,
-      arr[i].market,
-      arr[i].plRub,
-      arr[i].plPct,
-      arr[i].share
-    ]);
-  }
-  return rows;
+function _bondRound4_(x) {
+  return Math.round(Number(x || 0) * 10000) / 10000;
 }
