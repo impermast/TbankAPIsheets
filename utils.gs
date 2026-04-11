@@ -298,7 +298,14 @@ function addMonths_(d, n){
   // Для горизонта купонов в дашборде нам нужен первый день через n месяцев
   return new Date(d.getFullYear(), d.getMonth() + n, 1);
 }
-
+function bondAddMonths_(d, months) {
+  return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
+}
+function bondAddDays_(d, days) {
+  var x = new Date(d.getTime());
+  x.setDate(x.getDate() + days);
+  return x;
+}
 
 /** instrumentMetaByFigi_: берём только имя/тикер/класс. Быстро и с кэшем. */
 function instrumentMetaByFigi_(figi){
@@ -313,3 +320,94 @@ function instrumentMetaByFigi_(figi){
   return out;
 }
 
+
+
+/**
+ * Нормализация текста заголовка таблицы.
+ */
+function normalizeHeaderText_(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[ё]/g, 'е')
+    .trim();
+}
+
+/**
+ * Найти индекс колонки по набору возможных заголовков.
+ * Возвращает 0-based index или -1.
+ */
+function findHeaderIndexByAliases_(header, aliases) {
+  var normalizedHeader = [];
+  var i;
+  var j;
+  var alias;
+
+  for (i = 0; i < header.length; i++) {
+    normalizedHeader.push(normalizeHeaderText_(header[i]));
+  }
+
+  for (j = 0; j < aliases.length; j++) {
+    alias = normalizeHeaderText_(aliases[j]);
+    for (i = 0; i < normalizedHeader.length; i++) {
+      if (normalizedHeader[i] === alias) return i;
+    }
+  }
+
+  for (j = 0; j < aliases.length; j++) {
+    alias = normalizeHeaderText_(aliases[j]);
+    for (i = 0; i < normalizedHeader.length; i++) {
+      if (normalizedHeader[i] && alias && normalizedHeader[i].indexOf(alias) >= 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Безопасное приведение к числу.
+ * Пустые/невалидные значения -> 0.
+ */
+function toNumberSafe_(value) {
+  var s;
+  var n;
+
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number') return isNaN(value) ? 0 : value;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+
+  s = String(value).replace(/\s+/g, '').replace(',', '.');
+  n = Number(s);
+
+  return isNaN(n) ? 0 : n;
+}
+
+/**
+ * Есть ли в строке хотя бы одно непустое значение.
+ */
+function rowHasAnyValue_(row) {
+  var i;
+  if (!row) return false;
+
+  for (i = 0; i < row.length; i++) {
+    if (row[i] !== '' && row[i] != null) return true;
+  }
+  return false;
+}
+
+/**
+ * Безопасно взять значение по 0-based индексу.
+ */
+function valueByIndex_(row, idx) {
+  if (idx == null || idx < 0 || idx >= row.length) return '';
+  return row[idx];
+}
+
+/**
+ * Безопасно взять текст по 0-based индексу.
+ */
+function safeTextByIndex_(row, idx, fallback) {
+  var v = valueByIndex_(row, idx);
+  var s = String(v == null ? '' : v).trim();
+  return s || (fallback || '');
+}
