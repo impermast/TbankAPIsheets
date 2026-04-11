@@ -236,6 +236,8 @@ function sendDashboardGreets_() {
 }
 
 
+Сначала проверь новую версию кода
+
 function sendDashboardStatsFromDashboard_() {
   var sh = SpreadsheetApp.getActive().getSheetByName('Dashboard');
   if (!sh) { tgSendMessage_('Лист Dashboard не найден.'); return; }
@@ -272,7 +274,7 @@ function sendDashboardStatsFromDashboard_() {
   }
 
   function looksLikeHeaderRow(row) {
-    var joined = row.map(function(x){ return trim(x).toLowerCase(); }).join('|');
+    var joined = row.map(function(x) { return trim(x).toLowerCase(); }).join('|');
     return joined.indexOf('класс') >= 0 ||
       joined.indexOf('бумаг') >= 0 ||
       joined.indexOf('название') >= 0 ||
@@ -334,7 +336,6 @@ function sendDashboardStatsFromDashboard_() {
       }
 
       if (isKnownHeader(first)) break;
-
       started = true;
       out.push(rowVals);
     }
@@ -466,15 +467,14 @@ function sendDashboardStatsFromDashboard_() {
 
     assetClasses.forEach(function(r) {
       if (looksLikeHeaderRow(r)) return;
-
       var key = trim(r[0]);
       if (!key) return;
 
       var count = trim(r[1]);
       var market = trim(r[3]);
       var share = trim(r[6]);
-
       var parts = [];
+
       if (market) parts.push('стоимость ' + market);
       if (share) parts.push('доля ' + share);
       if (!parts.length && count) parts.push('бумаг ' + count);
@@ -518,15 +518,18 @@ function sendDashboardStatsFromDashboard_() {
 
     sharesTopPos.forEach(function(r) {
       if (looksLikeHeaderRow(r)) return;
+
       var name = trim(r[0]);
       var ticker = trim(r[1]);
       var market = trim(r[2]);
       var plRub = trim(r[3]);
       var plPct = trim(r[4]);
+
       if (!name) return;
 
       var key = ensureShare(name, ticker);
       if (market) shareMap[key].pos = market;
+
       if (plRub && plPct) shareMap[key].pl = plRub + ' (' + plPct + ')';
       else if (plRub) shareMap[key].pl = plRub;
       else if (plPct) shareMap[key].pl = plPct;
@@ -534,15 +537,18 @@ function sendDashboardStatsFromDashboard_() {
 
     sharesTopPL.forEach(function(r) {
       if (looksLikeHeaderRow(r)) return;
+
       var name = trim(r[0]);
       var ticker = trim(r[1]);
       var market = trim(r[2]);
       var plRub = trim(r[3]);
       var plPct = trim(r[4]);
+
       if (!name) return;
 
       var key = ensureShare(name, ticker);
       if (market && shareMap[key].pos === '—') shareMap[key].pos = market;
+
       if (plRub && plPct) shareMap[key].pl = plRub + ' (' + plPct + ')';
       else if (plRub) shareMap[key].pl = plRub;
       else if (plPct) shareMap[key].pl = plPct;
@@ -568,12 +574,18 @@ function sendDashboardStatsFromDashboard_() {
 
     if (bondsTopYtm.length) {
       bondLines.push('Top YTM:');
-      bondsTopYtm.forEach(function(r, i) {
+      var cleanBondsTopYtm = bondsTopYtm.filter(function(r) {
+        return !looksLikeHeaderRow(r) && trim(r[0]);
+      });
+      
+      cleanBondsTopYtm.forEach(function(r, i) {
         if (looksLikeHeaderRow(r)) return;
+
         var name = trim(r[0]);
         var ytm = trim(r[1]);
         var years = trim(r[2]);
         var figi = trim(r[3]);
+
         if (!name) return;
 
         var line = (i + 1) + '. ' + name + ' — YTM ' + (ytm || '—');
@@ -588,9 +600,11 @@ function sendDashboardStatsFromDashboard_() {
       bondLines.push('Top P/L:');
       bondsTopPL.forEach(function(r, i) {
         if (looksLikeHeaderRow(r)) return;
+
         var name = trim(r[0]);
         var plRub = trim(r[1]);
         var plPct = trim(r[2]);
+
         if (!name) return;
 
         var plText = '—';
@@ -607,9 +621,11 @@ function sendDashboardStatsFromDashboard_() {
       bondLines.push('Worst P/L:');
       bondsWorstPL.forEach(function(r, i) {
         if (looksLikeHeaderRow(r)) return;
+
         var name = trim(r[0]);
         var plRub = trim(r[1]);
         var plPct = trim(r[2]);
+
         if (!name) return;
 
         var plText = '—';
@@ -645,15 +661,18 @@ function sendDashboardStatsFromDashboard_() {
 
     fundsTopPos.forEach(function(r) {
       if (looksLikeHeaderRow(r)) return;
+
       var name = trim(r[0]);
       var ticker = trim(r[1]);
       var market = trim(r[2]);
       var plRub = trim(r[3]);
       var plPct = trim(r[4]);
+
       if (!name) return;
 
       var key = ensureFund(name, ticker);
       if (market) fundMap[key].pos = market;
+
       if (plRub && plPct) fundMap[key].pl = plRub + ' (' + plPct + ')';
       else if (plRub) fundMap[key].pl = plRub;
       else if (plPct) fundMap[key].pl = plPct;
@@ -661,15 +680,18 @@ function sendDashboardStatsFromDashboard_() {
 
     fundsTopPL.forEach(function(r) {
       if (looksLikeHeaderRow(r)) return;
+
       var name = trim(r[0]);
       var ticker = trim(r[1]);
       var market = trim(r[2]);
       var plRub = trim(r[3]);
       var plPct = trim(r[4]);
+
       if (!name) return;
 
       var key = ensureFund(name, ticker);
       if (market && fundMap[key].pos === '—') fundMap[key].pos = market;
+
       if (plRub && plPct) fundMap[key].pl = plRub + ' (' + plPct + ')';
       else if (plRub) fundMap[key].pl = plRub;
       else if (plPct) fundMap[key].pl = plPct;
@@ -698,7 +720,6 @@ function sendDashboardStatsFromDashboard_() {
   if (!lines.length) lines.push('Статистика на Dashboard не найдена.');
   tgSendMessage_(lines.join('\n').replace(/\n{3,}/g, '\n\n'));
 }
-
 
 function sendDashboardChartsToTelegram_(aliases) {
   var pack = exportDashboardCharts_(aliases);
