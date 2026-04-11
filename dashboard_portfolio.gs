@@ -94,6 +94,17 @@ var PORTFOLIO_DASHBOARD_LAYOUT = {
   }
 };
 
+var DASHBOARD_CHART_THEME = {
+  blue: '#4E79A7',
+  green: '#59A14F',
+  slate: '#9CA3AF',
+  orange: '#F28E2B',
+  red: '#E15759',
+  teal: '#76B7B2',
+  violet: '#8B5CF6',
+  palette: ['#4E79A7', '#59A14F', '#F28E2B', '#8B5CF6', '#76B7B2', '#E15759', '#84CC16', '#F97316']
+};
+
 function dashboardGetLayout_() {
   return PORTFOLIO_DASHBOARD_LAYOUT;
 }
@@ -222,7 +233,9 @@ function renderGeneralDashboardRegion_(sh, region, ctx) {
         width: 380,
         height: 220,
         options: {
-          legend: { position: 'none' }
+          colors: [DASHBOARD_CHART_THEME.blue],
+          legend: { position: 'none' },
+          vAxis: { format: '0.##' }
         }
       });
     }
@@ -253,9 +266,11 @@ function renderGeneralDashboardRegion_(sh, region, ctx) {
           width: 380,
           height: 220,
           options: {
+            colors: [DASHBOARD_CHART_THEME.blue],
             legend: { position: 'none' },
             hAxis: { title: 'Риск (баллы)' },
             vAxis: { title: 'YTM (%)' },
+            pointSize: 5,
             series: { 0: { pointSize: 5 } }
           }
         });
@@ -280,13 +295,16 @@ function renderGeneralDashboardRegion_(sh, region, ctx) {
       width: 400,
       height: 220,
       options: {
+        colors: [DASHBOARD_CHART_THEME.slate, DASHBOARD_CHART_THEME.blue],
         legend: { position: 'bottom' },
-        hAxis: { title: 'Дата', format: 'dd.MM' },
-        vAxis: { title: '₽' },
-        pointSize: 5,
+        hAxis: { format: 'dd.MM' },
+        vAxis: { title: '₽', format: 'short' },
+        pointSize: 4,
+        lineWidth: 2,
+        interpolateNulls: true,
         series: {
-          0: { labelInLegend: 'Инвестировано', pointSize: 5 },
-          1: { labelInLegend: 'Стоимость', pointSize: 5 }
+          0: { labelInLegend: 'Инвестировано', pointSize: 4, lineWidth: 2 },
+          1: { labelInLegend: 'Стоимость', pointSize: 4, lineWidth: 2 }
         }
       }
     });
@@ -383,7 +401,7 @@ function portfolioUpdateHistory_(snapshot, investedRub, marketRub, historyCfg) {
   var d;
   var inv;
   var mkt;
-  var N = historyCfg.r2 - historyCfg.r1; // строк данных без header
+  var N = historyCfg.r2 - historyCfg.r1;
   var now = new Date();
 
   if (snapshot && snapshot.length) {
@@ -1043,8 +1061,9 @@ function renderSharesDashboardRegion_(sh, region) {
       width: 400,
       height: 220,
       options: {
+        colors: DASHBOARD_CHART_THEME.palette.slice(0, 5),
         legend: { position: 'right' },
-        pieSliceText: 'value'
+        pieSliceText: 'percentage'
       }
     });
   }
@@ -1062,8 +1081,9 @@ function renderSharesDashboardRegion_(sh, region) {
       width: 400,
       height: 220,
       options: {
+        colors: [DASHBOARD_CHART_THEME.blue],
         legend: { position: 'none' },
-        hAxis: { format: '#,##0.00' },
+        hAxis: { format: 'short' },
         bars: 'horizontal'
       }
     });
@@ -1575,7 +1595,9 @@ function renderBondsDashboardRegion_(sh, region) {
       width: 420,
       height: 220,
       options: {
-        legend: { position: 'none' }
+        colors: [DASHBOARD_CHART_THEME.blue],
+        legend: { position: 'none' },
+        vAxis: { format: 'short' }
       }
     });
   }
@@ -1590,7 +1612,12 @@ function renderBondsDashboardRegion_(sh, region) {
       width: 420,
       height: 220,
       options: {
-        legend: { position: 'none' }
+        colors: [DASHBOARD_CHART_THEME.green],
+        legend: { position: 'none' },
+        pointSize: 4,
+        lineWidth: 2,
+        interpolateNulls: true,
+        vAxis: { format: 'short' }
       }
     });
   }
@@ -1876,7 +1903,9 @@ function renderFundsDashboardRegion_(sh, region) {
       width: 420,
       height: 220,
       options: {
-        legend: { position: 'right' }
+        colors: DASHBOARD_CHART_THEME.palette.slice(0, 5),
+        legend: { position: 'right' },
+        pieSliceText: 'percentage'
       }
     });
   } else if (currencyInfo && currencyInfo.dataRowsCount > 0) {
@@ -1891,7 +1920,9 @@ function renderFundsDashboardRegion_(sh, region) {
       width: 420,
       height: 220,
       options: {
-        legend: { position: 'right' }
+        colors: DASHBOARD_CHART_THEME.palette.slice(0, 5),
+        legend: { position: 'right' },
+        pieSliceText: 'percentage'
       }
     });
   }
@@ -2091,8 +2122,9 @@ function dashboardBuildChartFromRanges_(sh, cfg) {
 
   var options = cfg.options || {};
   for (var k in options) {
-    if (!options.hasOwnProperty(k)) continue;
-    builder.setOption(k, options[k]);
+    if (options.hasOwnProperty(k)) {
+      builder.setOption(k, options[k]);
+    }
   }
 
   var chart = builder.build();
@@ -2194,9 +2226,6 @@ function _readSheetTotalsByHeaders_(sheetName) {
   out.plPct = out.invested ? out.plRub / out.invested : null;
   return out;
 }
-
-
-
 
 function _pushNumberIfFinite_(arr, value) {
   var n = Number(value);
