@@ -236,8 +236,6 @@ function sendDashboardGreets_() {
 }
 
 
-Сначала проверь новую версию кода
-
 function sendDashboardStatsFromDashboard_() {
   var sh = SpreadsheetApp.getActive().getSheetByName('Dashboard');
   if (!sh) { tgSendMessage_('Лист Dashboard не найден.'); return; }
@@ -574,11 +572,7 @@ function sendDashboardStatsFromDashboard_() {
 
     if (bondsTopYtm.length) {
       bondLines.push('Top YTM:');
-      var cleanBondsTopYtm = bondsTopYtm.filter(function(r) {
-        return !looksLikeHeaderRow(r) && trim(r[0]);
-      });
-      
-      cleanBondsTopYtm.forEach(function(r, i) {
+      bondsTopYtm.forEach(function(r, i) {
         if (looksLikeHeaderRow(r)) return;
 
         var name = trim(r[0]);
