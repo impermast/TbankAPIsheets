@@ -345,15 +345,15 @@ function _buildGeneralPortfolioData_() {
 
 function _assetClassRow_(title, totals, totalMarket) {
   var t = totals || {};
-  var invested = _toNumberSafe_(t.invested);
-  var market = _toNumberSafe_(t.market);
-  var plRub = _toNumberSafe_(t.plRub);
+  var invested = toNumberSafe_(t.invested);
+  var market = toNumberSafe_(t.market);
+  var plRub = toNumberSafe_(t.plRub);
   var plPct = t.plPct != null ? t.plPct : (invested ? plRub / invested : null);
   var share = totalMarket ? market / totalMarket : null;
 
   return [
     title,
-    _toNumberSafe_(t.count),
+    toNumberSafe_(t.count),
     invested,
     market,
     plRub,
@@ -745,16 +745,16 @@ function _buildSharesFallbackData_(header, rows) {
   var betaArr = [];
 
   rows.forEach(function (r) {
-    if (!_rowHasAnyValue_(r)) return;
+    if (!rowHasAnyValue_(r)) return;
 
-    var name = _safeTextByIndex_(r, c.name, '—');
-    var ticker = _safeTextByIndex_(r, c.ticker, '—');
-    var marketVal = _toNumberSafe_(_valueByIndex_(r, c.market));
-    var investedVal = _toNumberSafe_(_valueByIndex_(r, c.invested));
-    var plRubVal = _toNumberSafe_(_valueByIndex_(r, c.plRub));
-    var plPctVal = _valueByIndex_(r, c.plPct);
+    var name = safeTextByIndex_(r, c.name, '—');
+    var ticker = safeTextByIndex_(r, c.ticker, '—');
+    var marketVal = toNumberSafe_(valueByIndex_(r, c.market));
+    var investedVal = toNumberSafe_(valueByIndex_(r, c.invested));
+    var plRubVal = toNumberSafe_(valueByIndex_(r, c.plRub));
+    var plPctVal = valueByIndex_(r, c.plPct);
 
-    plPctVal = (plPctVal === '' || plPctVal == null) ? null : _toNumberSafe_(plPctVal);
+    plPctVal = (plPctVal === '' || plPctVal == null) ? null : toNumberSafe_(plPctVal);
     if (plPctVal == null) plPctVal = investedVal ? plRubVal / investedVal : null;
 
     count += 1;
@@ -770,14 +770,14 @@ function _buildSharesFallbackData_(header, rows) {
       plPct: plPctVal
     });
 
-    _pushMarketAgg_(sectorsMap, _safeTextByIndex_(r, c.sector, '—'), marketVal);
-    _pushMarketAgg_(countriesMap, _safeTextByIndex_(r, c.country, '—'), marketVal);
+    _pushMarketAgg_(sectorsMap, safeTextByIndex_(r, c.sector, '—'), marketVal);
+    _pushMarketAgg_(countriesMap, safeTextByIndex_(r, c.country, '—'), marketVal);
 
-    _pushNumberIfFinite_(peArr, _valueByIndex_(r, c.pe));
-    _pushNumberIfFinite_(pbArr, _valueByIndex_(r, c.pb));
-    _pushNumberIfFinite_(evEbitdaArr, _valueByIndex_(r, c.evEbitda));
-    _pushNumberIfFinite_(roeArr, _valueByIndex_(r, c.roe));
-    _pushNumberIfFinite_(betaArr, _valueByIndex_(r, c.beta));
+    _pushNumberIfFinite_(peArr, valueByIndex_(r, c.pe));
+    _pushNumberIfFinite_(pbArr, valueByIndex_(r, c.pb));
+    _pushNumberIfFinite_(evEbitdaArr, valueByIndex_(r, c.evEbitda));
+    _pushNumberIfFinite_(roeArr, valueByIndex_(r, c.roe));
+    _pushNumberIfFinite_(betaArr, valueByIndex_(r, c.beta));
   });
 
   var totalMarket = market;
@@ -822,19 +822,19 @@ function _buildSharesFallbackData_(header, rows) {
 
 function _mapGenericSharesColumns_(header) {
   return {
-    name: _findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
-    ticker: _findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
-    invested: _findHeaderIndexByAliases_(header, ['Инвестировано']),
-    market: _findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
-    plRub: _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
-    plPct: _findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %']),
-    sector: _findHeaderIndexByAliases_(header, ['Сектор']),
-    country: _findHeaderIndexByAliases_(header, ['Страна', 'Country', 'Страна риска']),
-    pe: _findHeaderIndexByAliases_(header, ['P/E', 'P/E (TTM)', 'PE', 'PE TTM']),
-    pb: _findHeaderIndexByAliases_(header, ['P/B', 'PB', 'P/B TTM']),
-    evEbitda: _findHeaderIndexByAliases_(header, ['EV/EBITDA', 'evToEbitda']),
-    roe: _findHeaderIndexByAliases_(header, ['ROE', 'roe']),
-    beta: _findHeaderIndexByAliases_(header, ['Beta', 'beta'])
+    name: findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
+    ticker: findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
+    invested: findHeaderIndexByAliases_(header, ['Инвестировано']),
+    market: findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
+    plRub: findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
+    plPct: findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %']),
+    sector: findHeaderIndexByAliases_(header, ['Сектор']),
+    country: findHeaderIndexByAliases_(header, ['Страна', 'Country', 'Страна риска']),
+    pe: findHeaderIndexByAliases_(header, ['P/E', 'P/E (TTM)', 'PE', 'PE TTM']),
+    pb: findHeaderIndexByAliases_(header, ['P/B', 'PB', 'P/B TTM']),
+    evEbitda: findHeaderIndexByAliases_(header, ['EV/EBITDA', 'evToEbitda']),
+    roe: findHeaderIndexByAliases_(header, ['ROE', 'roe']),
+    beta: findHeaderIndexByAliases_(header, ['Beta', 'beta'])
   };
 }
 
@@ -1297,7 +1297,7 @@ function _computeBondsMaturitySummary_(rows, c, now) {
 
 function _computeBondsCoupon6mSummary_(rows, c, now) {
   var start = _bondStripDate_(now);
-  var horizon = _bondAddMonths_(start, 6);
+  var horizon = bondAddMonths_(start, 6);
 
   var months = [];
   var monthMap = {};
@@ -1331,7 +1331,7 @@ function _computeBondsCoupon6mSummary_(rows, c, now) {
           monthMap[key] += couponValue * qty;
         }
       }
-      d2 = _bondAddDays_(d2, periodDays);
+      d2 = bondAddDays_(d2, periodDays);
     }
   });
 
@@ -1612,7 +1612,7 @@ function _loadFundsRegionData_() {
   var rows = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
 
   rows = rows.filter(function (r) {
-    return _rowHasAnyValue_(r);
+    return rowHasAnyValue_(r);
   });
 
   return { header: header, rows: rows };
@@ -1620,14 +1620,14 @@ function _loadFundsRegionData_() {
 
 function _mapFundsRegionColumns_(header) {
   return {
-    name: _findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
-    ticker: _findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
-    sector: _findHeaderIndexByAliases_(header, ['Сектор', 'Категория', 'Тема', 'Фокус']),
-    currency: _findHeaderIndexByAliases_(header, ['Валюта', 'Currency']),
-    invested: _findHeaderIndexByAliases_(header, ['Инвестировано']),
-    market: _findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
-    plRub: _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
-    plPct: _findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %'])
+    name: findHeaderIndexByAliases_(header, ['Название', 'Наименование', 'Инструмент', 'Компания']),
+    ticker: findHeaderIndexByAliases_(header, ['Тикер', 'Ticker']),
+    sector: findHeaderIndexByAliases_(header, ['Сектор', 'Категория', 'Тема', 'Фокус']),
+    currency: findHeaderIndexByAliases_(header, ['Валюта', 'Currency']),
+    invested: findHeaderIndexByAliases_(header, ['Инвестировано']),
+    market: findHeaderIndexByAliases_(header, ['Рыночная стоимость', 'Стоимость', 'Рыночная стоимость, ₽']),
+    plRub: findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']),
+    plPct: findHeaderIndexByAliases_(header, ['P/L (%)', 'P/L %'])
   };
 }
 
@@ -1637,9 +1637,9 @@ function _computeFundsTotals_(rows, cols) {
   var plRub = 0;
 
   rows.forEach(function (row) {
-    var inv = _toNumberSafe_(_valueByIndex_(row, cols.invested));
-    var mkt = _toNumberSafe_(_valueByIndex_(row, cols.market));
-    var pl = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (mkt - inv);
+    var inv = toNumberSafe_(valueByIndex_(row, cols.invested));
+    var mkt = toNumberSafe_(valueByIndex_(row, cols.market));
+    var pl = cols.plRub >= 0 ? toNumberSafe_(valueByIndex_(row, cols.plRub)) : (mkt - inv);
 
     invested += inv;
     market += mkt;
@@ -1657,13 +1657,13 @@ function _computeFundsTotals_(rows, cols) {
 function _computeFundsTopByMarket_(rows, cols, limit) {
   return rows
     .map(function (row) {
-      var invested = _toNumberSafe_(_valueByIndex_(row, cols.invested));
-      var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
-      var plRub = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (market - invested);
+      var invested = toNumberSafe_(valueByIndex_(row, cols.invested));
+      var market = toNumberSafe_(valueByIndex_(row, cols.market));
+      var plRub = cols.plRub >= 0 ? toNumberSafe_(valueByIndex_(row, cols.plRub)) : (market - invested);
 
       return {
-        name: _safeTextByIndex_(row, cols.name, '—'),
-        ticker: _safeTextByIndex_(row, cols.ticker, '—'),
+        name: safeTextByIndex_(row, cols.name, '—'),
+        ticker: safeTextByIndex_(row, cols.ticker, '—'),
         invested: invested,
         market: market,
         plRub: plRub,
@@ -1682,13 +1682,13 @@ function _computeFundsTopByMarket_(rows, cols, limit) {
 function _computeFundsTopByPl_(rows, cols, limit) {
   return rows
     .map(function (row) {
-      var invested = _toNumberSafe_(_valueByIndex_(row, cols.invested));
-      var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
-      var plRub = cols.plRub >= 0 ? _toNumberSafe_(_valueByIndex_(row, cols.plRub)) : (market - invested);
+      var invested = toNumberSafe_(valueByIndex_(row, cols.invested));
+      var market = toNumberSafe_(valueByIndex_(row, cols.market));
+      var plRub = cols.plRub >= 0 ? toNumberSafe_(valueByIndex_(row, cols.plRub)) : (market - invested);
 
       return {
-        name: _safeTextByIndex_(row, cols.name, '—'),
-        ticker: _safeTextByIndex_(row, cols.ticker, '—'),
+        name: safeTextByIndex_(row, cols.name, '—'),
+        ticker: safeTextByIndex_(row, cols.ticker, '—'),
         invested: invested,
         market: market,
         plRub: plRub,
@@ -1709,8 +1709,8 @@ function _computeFundsSectorSummary_(rows, cols) {
   var map = {};
 
   rows.forEach(function (row) {
-    var sector = _safeTextByIndex_(row, cols.sector, '—');
-    var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+    var sector = safeTextByIndex_(row, cols.sector, '—');
+    var market = toNumberSafe_(valueByIndex_(row, cols.market));
 
     totalMarket += market;
     map[sector] = (map[sector] || 0) + market;
@@ -1735,8 +1735,8 @@ function _computeFundsCurrencySummary_(rows, cols) {
   var map = {};
 
   rows.forEach(function (row) {
-    var currency = _safeTextByIndex_(row, cols.currency, '—');
-    var market = _toNumberSafe_(_valueByIndex_(row, cols.market));
+    var currency = safeTextByIndex_(row, cols.currency, '—');
+    var market = toNumberSafe_(valueByIndex_(row, cols.market));
 
     totalMarket += market;
     map[currency] = (map[currency] || 0) + market;
@@ -2178,90 +2178,25 @@ function _readSheetTotalsByHeaders_(sheetName) {
   header = data[0] || [];
   rows = data.slice(1);
 
-  idxInvested = _findHeaderIndexByAliases_(header, ['Инвестировано']);
-  idxMarket = _findHeaderIndexByAliases_(header, ['Рыночная стоимость']);
-  idxPlRub = _findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']);
+  idxInvested = findHeaderIndexByAliases_(header, ['Инвестировано']);
+  idxMarket = findHeaderIndexByAliases_(header, ['Рыночная стоимость']);
+  idxPlRub = findHeaderIndexByAliases_(header, ['P/L (руб)', 'P/L, руб', 'P/L RUB']);
 
   for (i = 0; i < rows.length; i++) {
-    if (!_rowHasAnyValue_(rows[i])) continue;
+    if (!rowHasAnyValue_(rows[i])) continue;
 
     out.count += 1;
-    if (idxInvested >= 0) out.invested += _toNumberSafe_(rows[i][idxInvested]);
-    if (idxMarket >= 0) out.market += _toNumberSafe_(rows[i][idxMarket]);
-    if (idxPlRub >= 0) out.plRub += _toNumberSafe_(rows[i][idxPlRub]);
+    if (idxInvested >= 0) out.invested += toNumberSafe_(rows[i][idxInvested]);
+    if (idxMarket >= 0) out.market += toNumberSafe_(rows[i][idxMarket]);
+    if (idxPlRub >= 0) out.plRub += toNumberSafe_(rows[i][idxPlRub]);
   }
 
   out.plPct = out.invested ? out.plRub / out.invested : null;
   return out;
 }
 
-function _findHeaderIndexByAliases_(header, aliases) {
-  var normalizedHeader = [];
-  var i;
-  var j;
 
-  for (i = 0; i < header.length; i++) {
-    normalizedHeader.push(_normalizeHeaderText_(header[i]));
-  }
 
-  for (j = 0; j < aliases.length; j++) {
-    var alias = _normalizeHeaderText_(aliases[j]);
-    for (i = 0; i < normalizedHeader.length; i++) {
-      if (normalizedHeader[i] === alias) return i;
-    }
-  }
-
-  for (j = 0; j < aliases.length; j++) {
-    alias = _normalizeHeaderText_(aliases[j]);
-    for (i = 0; i < normalizedHeader.length; i++) {
-      if (normalizedHeader[i] && alias && normalizedHeader[i].indexOf(alias) >= 0) return i;
-    }
-  }
-
-  return -1;
-}
-
-function _normalizeHeaderText_(value) {
-  return String(value == null ? '' : value)
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[ё]/g, 'е')
-    .trim();
-}
-
-function _toNumberSafe_(value) {
-  var s;
-  var n;
-
-  if (value == null || value === '') return 0;
-  if (typeof value === 'number') return isNaN(value) ? 0 : value;
-  if (typeof value === 'boolean') return value ? 1 : 0;
-
-  s = String(value).replace(/\s+/g, '').replace(',', '.');
-  n = Number(s);
-
-  return isNaN(n) ? 0 : n;
-}
-
-function _rowHasAnyValue_(row) {
-  var i;
-  if (!row) return false;
-
-  for (i = 0; i < row.length; i++) {
-    if (row[i] !== '' && row[i] != null) return true;
-  }
-  return false;
-}
-
-function _valueByIndex_(row, idx) {
-  if (idx == null || idx < 0 || idx >= row.length) return '';
-  return row[idx];
-}
-
-function _safeTextByIndex_(row, idx, fallback) {
-  var s = String(_valueByIndex_(row, idx) == null ? '' : _valueByIndex_(row, idx)).trim();
-  return s || (fallback || '');
-}
 
 function _pushNumberIfFinite_(arr, value) {
   var n = Number(value);
@@ -2351,16 +2286,6 @@ function _bondDate_(r, ci) {
 
 function _bondStripDate_(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-function _bondAddDays_(d, days) {
-  var x = new Date(d.getTime());
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function _bondAddMonths_(d, months) {
-  return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
 }
 
 function _bondPad2_(n) {
