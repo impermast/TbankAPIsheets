@@ -1,5 +1,5 @@
 /**
- * tgbot_api.gs
+ * api_telegram.gs
  * Простые помощники для Telegram: читают токен/чат из Script Properties.
  *
  * Ожидаемые ключи в Project → Script properties:
