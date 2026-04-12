@@ -50,11 +50,7 @@
  * E23 = near 52w low threshold
  * E24 = Market Cap small
  * E25 = Market Cap large
-*/
-
-function helloTest() {
-  Logger.log('ok');
-}
+ */
 
 const PORTFOLIO_FORMATING_SHEETS = {
   rules: 'Rules',
@@ -62,7 +58,7 @@ const PORTFOLIO_FORMATING_SHEETS = {
   bonds: 'Bonds',
   funds: 'Funds',
   options: 'Options'
-}
+};
 
 const PORTFOLIO_FORMATING_COLORS = {
   text: '#1f2937',
@@ -80,7 +76,7 @@ const PORTFOLIO_FORMATING_COLORS = {
   blue: '#e8f0fe',
   purple: '#f3e8ff',
   grey: '#f1f3f4'
-}
+};
 
 const PORTFOLIO_FORMATING_SHARES_SERVICE = {
   quality: 'A: Quality',
@@ -146,7 +142,6 @@ const PORTFOLIO_FORMATING_RULES_LAYOUT = {
     }
   },
 
-  // Зарезервированные блоки для будущего расширения.
   bonds: {
     anchor: 'H1',
     cells: {}
@@ -190,6 +185,7 @@ function runPortfolioFormating() {
   };
 
   summary.shares = runSharesFormating(rules);
+
   return summary;
 }
 
@@ -483,78 +479,77 @@ function pfAnalyzeSharesRow_(row, headerMap, rules) {
   }
 
   // ---------- Quality ----------
-  var qualityScore = 0;
-  var qualityInputs = 0;
-  var qualityNegatives = 0;
+  // Точечная правка:
+  // - zero-like значения не считаются автоматическим негативом;
+  // - hard negatives только EBITDA < 0 и Net Income < 0;
+  // - Strong требует >= 2 soft positive signals и отсутствия hard negatives;
+  // - Weak даётся за hard negatives или за несколько soft negatives;
+  // - смешанные/неполные данные -> Neutral.
+
+  var qualityHasAnyData = false;
+  var qualityPositiveCount = 0;
+  var qualityNegativeCount = 0;
+  var hardNegativeCount = 0;
 
   var roe = pfNumberByHeader_(row, headerMap, 'ROE');
-  if (roe != null && (pfHasValue_(shareRules.roeGood) || pfHasValue_(shareRules.roeBad))) {
-    qualityInputs++;
+  if (roe != null) qualityHasAnyData = true;
+  if (pfIsMeaningfulQualityValue_(roe) && (pfHasValue_(shareRules.roeGood) || pfHasValue_(shareRules.roeBad))) {
     if (pfHasValue_(shareRules.roeGood) && roe >= shareRules.roeGood) {
-      qualityScore++;
+      qualityPositiveCount++;
       out.sourceStyles['ROE'] = pfStyle_(C.green, C.text, 'bold');
     } else if (pfHasValue_(shareRules.roeBad) && roe <= shareRules.roeBad) {
-      qualityScore--;
-      qualityNegatives++;
+      qualityNegativeCount++;
       out.sourceStyles['ROE'] = pfStyle_(C.red, C.text, 'bold');
     }
   }
 
   var roa = pfNumberByHeader_(row, headerMap, 'ROA');
-  if (roa != null && (pfHasValue_(shareRules.roaGood) || pfHasValue_(shareRules.roaBad))) {
-    qualityInputs++;
+  if (roa != null) qualityHasAnyData = true;
+  if (pfIsMeaningfulQualityValue_(roa) && (pfHasValue_(shareRules.roaGood) || pfHasValue_(shareRules.roaBad))) {
     if (pfHasValue_(shareRules.roaGood) && roa >= shareRules.roaGood) {
-      qualityScore++;
+      qualityPositiveCount++;
       out.sourceStyles['ROA'] = pfStyle_(C.green, C.text, 'bold');
     } else if (pfHasValue_(shareRules.roaBad) && roa <= shareRules.roaBad) {
-      qualityScore--;
-      qualityNegatives++;
+      qualityNegativeCount++;
       out.sourceStyles['ROA'] = pfStyle_(C.red, C.text, 'bold');
     }
   }
 
   var roic = pfNumberByHeader_(row, headerMap, 'ROIC');
-  if (roic != null && (pfHasValue_(shareRules.roicGood) || pfHasValue_(shareRules.roicBad))) {
-    qualityInputs++;
+  if (roic != null) qualityHasAnyData = true;
+  if (pfIsMeaningfulQualityValue_(roic) && (pfHasValue_(shareRules.roicGood) || pfHasValue_(shareRules.roicBad))) {
     if (pfHasValue_(shareRules.roicGood) && roic >= shareRules.roicGood) {
-      qualityScore++;
+      qualityPositiveCount++;
       out.sourceStyles['ROIC'] = pfStyle_(C.green, C.text, 'bold');
     } else if (pfHasValue_(shareRules.roicBad) && roic <= shareRules.roicBad) {
-      qualityScore--;
-      qualityNegatives++;
+      qualityNegativeCount++;
       out.sourceStyles['ROIC'] = pfStyle_(C.red, C.text, 'bold');
     }
   }
 
   var ebitda = pfNumberByHeader_(row, headerMap, 'EBITDA TTM');
-  if (ebitda != null) {
-    qualityInputs++;
-    if (ebitda < 0) {
-      qualityScore--;
-      qualityNegatives++;
-      pfPushUnique_(flags, 'NEG_EBITDA');
-      out.sourceStyles['EBITDA TTM'] = pfStyle_(C.redStrong, C.text, 'bold');
-    }
+  if (ebitda != null) qualityHasAnyData = true;
+  if (ebitda != null && ebitda < 0) {
+    hardNegativeCount++;
+    pfPushUnique_(flags, 'NEG_EBITDA');
+    out.sourceStyles['EBITDA TTM'] = pfStyle_(C.redStrong, C.text, 'bold');
   }
 
   var netIncome = pfNumberByHeader_(row, headerMap, 'Чистая прибыль TTM');
-  if (netIncome != null) {
-    qualityInputs++;
-    if (netIncome < 0) {
-      qualityScore--;
-      qualityNegatives++;
-      pfPushUnique_(flags, 'NEG_EARNINGS');
-      out.sourceStyles['Чистая прибыль TTM'] = pfStyle_(C.redStrong, C.text, 'bold');
-    }
+  if (netIncome != null) qualityHasAnyData = true;
+  if (netIncome != null && netIncome < 0) {
+    hardNegativeCount++;
+    pfPushUnique_(flags, 'NEG_EARNINGS');
+    out.sourceStyles['Чистая прибыль TTM'] = pfStyle_(C.redStrong, C.text, 'bold');
   }
 
-  if (qualityInputs > 0) {
-    if (qualityScore >= 2 && qualityNegatives === 0) {
-      out.service.quality = 'Strong';
-      out.serviceStyles.quality = pfStyle_(C.green, C.text, 'bold');
-    } else if (qualityScore <= -1 || qualityNegatives > 0) {
+  if (qualityHasAnyData) {
+    if (hardNegativeCount > 0 || qualityNegativeCount >= 2) {
       out.service.quality = 'Weak';
       out.serviceStyles.quality = pfStyle_(C.red, C.text, 'bold');
+    } else if (qualityPositiveCount >= 2 && qualityNegativeCount === 0) {
+      out.service.quality = 'Strong';
+      out.serviceStyles.quality = pfStyle_(C.green, C.text, 'bold');
     } else {
       out.service.quality = 'Neutral';
       out.serviceStyles.quality = pfStyle_(C.grey, C.text, 'normal');
@@ -958,7 +953,7 @@ function pfStyle_(bg, fontColor, fontWeight) {
     fontColor: fontColor || PORTFOLIO_FORMATING_COLORS.text,
     fontWeight: fontWeight || 'normal'
   };
-};
+}
 
 function pfCreateStyleMatrix_(numRows, defaultBg, defaultFontColor, defaultFontWeight) {
   var backgrounds = [];
@@ -976,7 +971,7 @@ function pfCreateStyleMatrix_(numRows, defaultBg, defaultFontColor, defaultFontW
     fontColors: fontColors,
     fontWeights: fontWeights
   };
-};
+}
 
 function pfSetMatrixCell_(matrix, rowIndex, bg, fontColor, fontWeight) {
   if (!matrix || rowIndex < 0) return;
@@ -984,7 +979,7 @@ function pfSetMatrixCell_(matrix, rowIndex, bg, fontColor, fontWeight) {
   if (bg != null) matrix.backgrounds[rowIndex][0] = bg;
   if (fontColor != null) matrix.fontColors[rowIndex][0] = fontColor;
   if (fontWeight != null) matrix.fontWeights[rowIndex][0] = fontWeight;
-};
+}
 
 function pfApplyColumnMatrix_(sh, col, matrix, numRows) {
   if (!matrix || !col || !numRows) return;
@@ -993,7 +988,7 @@ function pfApplyColumnMatrix_(sh, col, matrix, numRows) {
   range.setBackgrounds(matrix.backgrounds);
   range.setFontColors(matrix.fontColors);
   range.setFontWeights(matrix.fontWeights);
-};
+}
 
 function pfServiceKeyByHeader_(header) {
   if (header === PORTFOLIO_FORMATING_SHARES_SERVICE.quality) return 'quality';
@@ -1002,4 +997,13 @@ function pfServiceKeyByHeader_(header) {
   if (header === PORTFOLIO_FORMATING_SHARES_SERVICE.position52w) return 'position52w';
   if (header === PORTFOLIO_FORMATING_SHARES_SERVICE.flags) return 'flags';
   return '';
-};
+}
+
+function pfIsZeroLike_(value) {
+  if (value == null) return false;
+  return Math.abs(Number(value) || 0) < 1e-9;
+}
+
+function pfIsMeaningfulQualityValue_(value) {
+  return value != null && !pfIsZeroLike_(value);
+}
