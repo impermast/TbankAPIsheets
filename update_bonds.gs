@@ -1,6 +1,12 @@
 /**
- * bonds_update.gs
- * Лист «Bonds»: заголовки, полное обновление, формулы (включая Риск по Rules), обновление только цен.
+ * update_bonds.gs
+ * Лист «Bonds»: raw data loader без расчёта аналитики.
+ *
+ * Что делает:
+ * - загружает и записывает source / raw поля по облигациям;
+ * - сохраняет текущую структуру и порядок заголовков;
+ * - оставляет derived-колонки пустыми;
+ * - обновляет только рыночные raw-поля в режиме price-only.
  */
 
 const BONDS_SHEET = 'Bonds';
@@ -86,7 +92,7 @@ function updateBondsFull() {
       var avgAdj = bondPricePctToCurrency_(avgRaw, bi.nominal);
 
       rows.push([
-        '',                                      // Риск (ручн.) — формула поставится ниже
+        '',                                      // Риск (ручн.) — post-processing заполнит позже
         '',                                      // Комментарий ИИ
         '',                                      // Комментарий пользователя
         figi,                                    // FIGI
@@ -101,7 +107,7 @@ function updateBondsFull() {
         (bi.sector || ''),                       // Сектор
         (bi.riskLevelDesc || ''),                // Риск (уровень TCS)
 
-        '', '', '', '', '',                      // расчётные — формулы ниже
+        '', '', '', '', '',                      // расчётные — post-processing заполнит позже
 
         (bi.nominal != null ? bi.nominal : ''),  // Номинал
         (md.accrued != null ? md.accrued : ''),  // НКД
@@ -124,7 +130,6 @@ function updateBondsFull() {
   sh.getRange(1, 1, 1, BONDS_HEADERS.length).setValues([BONDS_HEADERS]);
   if (rows.length) {
     sh.getRange(2, 1, rows.length, BONDS_HEADERS.length).setValues(rows);
-    applyFormulas_(sh, 2, rows.length);        // все формулы, включая Риск (ручн.)
   }
   sh.autoResizeColumns(1, BONDS_HEADERS.length);
   sh.setFrozenRows(1);
