@@ -457,6 +457,7 @@ function runBondsFormating(preloadedRules) {
     'Доходность купонная годовая (прибл.)',
     'Риск (ручн.)',
     'Риск (уровень TCS)',
+    'Класс риска TCS',
     'Дата погашения',
     'Следующий купон',
     'Тип купона (desc)'
@@ -1032,10 +1033,19 @@ function pfAnalyzeBondRow_(row, headerMap, rules) {
     }
   }
 
-  // ---------- Risk ----------
+  var maturityDate = pfDateByHeader_(row, headerMap, 'Дата погашения');
+  var couponTypeText = pfTextByHeader_(row, headerMap, 'Тип купона (desc)');
+
+    // ---------- Risk ----------
   var manualRisk = pfNumberByHeader_(row, headerMap, 'Риск (ручн.)');
+  var rawTcsRiskClass = pfTextByHeader_(row, headerMap, 'Класс риска TCS');
   var tcsRiskText = pfTextByHeader_(row, headerMap, 'Риск (уровень TCS)');
-  var riskInfo = pfClassifyBondRisk_(manualRisk, tcsRiskText, bondRules);
+  var riskInfo = pfClassifyBondRisk_(
+    manualRisk,
+    rawTcsRiskClass,
+    tcsRiskText,
+    bondRules
+  );
 
   if (riskInfo.label) {
     out.service.bondRisk = riskInfo.label;
@@ -1043,7 +1053,9 @@ function pfAnalyzeBondRow_(row, headerMap, rules) {
 
     if (riskInfo.source === 'manual') {
       out.sourceStyles['Риск (ручн.)'] = riskInfo.sourceStyle;
-    } else if (riskInfo.source === 'tcs') {
+    } else if (riskInfo.source === 'tcsRaw') {
+      out.sourceStyles['Класс риска TCS'] = riskInfo.sourceStyle;
+    } else if (riskInfo.source === 'tcsText') {
       out.sourceStyles['Риск (уровень TCS)'] = riskInfo.sourceStyle;
     }
 
@@ -1053,7 +1065,6 @@ function pfAnalyzeBondRow_(row, headerMap, rules) {
   }
 
   // ---------- Maturity ----------
-  var maturityDate = pfDateByHeader_(row, headerMap, 'Дата погашения');
   var maturityInfo = pfClassifyBondMaturity_(maturityDate, bondRules);
 
   if (maturityInfo.label) {
@@ -1085,7 +1096,6 @@ function pfAnalyzeBondRow_(row, headerMap, rules) {
   }
 
   // ---------- Coupon type ----------
-  var couponTypeText = pfTextByHeader_(row, headerMap, 'Тип купона (desc)');
   var couponInfo = pfClassifyBondCoupon_(couponTypeText);
 
   if (couponInfo.label) {
@@ -1161,65 +1171,64 @@ function pfClassifyBondYield_(yieldPct, bondRules) {
   };
 }
 
-function pfClassifyBondRisk_(manualRisk, tcsRiskText, bondRules) {
-  var C = PORTFOLIO_FORMATING_COLORS;
+function pfClassifyBondRisk_(manualRisk, rawTcsRiskClass, tcsRiskText, bondRules) {
+  var baseInfo = pfResolveBondRiskBase_(manualRisk, rawTcsRiskClass, tcsRiskText, bondRules);
+  if (!baseInfo.label) return pfEmptyBondSignal_();
+
+  var finalStyle = pfBondRiskStyleByLabel_(baseInfo.label);
+
+  return {
+    label: baseInfo.label,
+    source: baseInfo.source,
+    serviceStyle: finalStyle,
+    sourceStyle: finalStyle
+  };
+}
+
+function pfResolveBondRiskBase_(manualRisk, rawTcsRiskClass, tcsRiskText, bondRules) {
   var medium = pfNormalizeNumber_(bondRules.manualRiskMedium);
   var high = pfNormalizeNumber_(bondRules.manualRiskHigh);
 
-  if (manualRisk != null && (medium != null || high != null)) {
+  if (pfIsUsableBondManualRisk_(manualRisk) && (medium != null || high != null)) {
     if (high != null && manualRisk >= high) {
-      return {
-        label: 'High',
-        source: 'manual',
-        serviceStyle: pfStyle_(C.red, C.text, 'bold'),
-        sourceStyle: pfStyle_(C.red, C.text, 'bold')
-      };
+      return { label: 'High', source: 'manual' };
     }
-
     if (medium != null && manualRisk >= medium) {
-      return {
-        label: 'Medium',
-        source: 'manual',
-        serviceStyle: pfStyle_(C.amber, C.text, 'bold'),
-        sourceStyle: pfStyle_(C.amber, C.text, 'bold')
-      };
+      return { label: 'Medium', source: 'manual' };
     }
-
-    return {
-      label: 'Low',
-      source: 'manual',
-      serviceStyle: pfStyle_(C.green, C.text, 'normal'),
-      sourceStyle: pfStyle_(C.green, C.text, 'normal')
-    };
+    return { label: 'Low', source: 'manual' };
   }
 
-  var tcsLabel = pfMapBondTcsRisk_(tcsRiskText);
-  if (!tcsLabel) return pfEmptyBondSignal_();
-
-  if (tcsLabel === 'High') {
-    return {
-      label: 'High',
-      source: 'tcs',
-      serviceStyle: pfStyle_(C.red, C.text, 'bold'),
-      sourceStyle: pfStyle_(C.red, C.text, 'bold')
-    };
+  var rawLabel = pfMapBondTcsRiskRaw_(rawTcsRiskClass);
+  if (rawLabel) {
+    return { label: rawLabel, source: 'tcsRaw' };
   }
 
-  if (tcsLabel === 'Medium') {
-    return {
-      label: 'Medium',
-      source: 'tcs',
-      serviceStyle: pfStyle_(C.amber, C.text, 'bold'),
-      sourceStyle: pfStyle_(C.amber, C.text, 'bold')
-    };
+  var textLabel = pfMapBondTcsRisk_(tcsRiskText);
+  if (textLabel) {
+    return { label: textLabel, source: 'tcsText' };
   }
 
-  return {
-    label: 'Low',
-    source: 'tcs',
-    serviceStyle: pfStyle_(C.green, C.text, 'normal'),
-    sourceStyle: pfStyle_(C.green, C.text, 'normal')
-  };
+  return { label: '', source: '' };
+}
+
+
+function pfBondRiskStyleByLabel_(label) {
+  var C = PORTFOLIO_FORMATING_COLORS;
+
+  if (label === 'High') {
+    return pfStyle_(C.red, C.text, 'bold');
+  }
+
+  if (label === 'Medium') {
+    return pfStyle_(C.amber, C.text, 'bold');
+  }
+
+  if (label === 'Low') {
+    return pfStyle_(C.green, C.text, 'normal');
+  }
+
+  return pfStyle_(C.neutralBg, C.text, 'normal');
 }
 
 function pfClassifyBondMaturity_(maturityDate, bondRules) {
@@ -1343,6 +1352,17 @@ function pfEmptyBondSignal_() {
     sourceStyle: pfStyle_(PORTFOLIO_FORMATING_COLORS.neutralBg, PORTFOLIO_FORMATING_COLORS.text, 'normal'),
     flag: ''
   };
+}
+
+function pfMapBondTcsRiskRaw_(text) {
+  var s = String(text || '').trim().toUpperCase();
+  if (!s) return '';
+
+  if (s.indexOf('RISK_LEVEL_LOW') !== -1 || s === 'LOW') return 'Low';
+  if (s.indexOf('RISK_LEVEL_MODERATE') !== -1 || s.indexOf('MODERATE') !== -1 || s === 'MEDIUM') return 'Medium';
+  if (s.indexOf('RISK_LEVEL_HIGH') !== -1 || s === 'HIGH') return 'High';
+
+  return '';
 }
 
 function pfMapBondTcsRisk_(text) {
@@ -1596,6 +1616,12 @@ function pfDaysUntilDate_(dateValue) {
   return Math.round((dt.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
 }
 
+function pfYearsUntilDate_(dateValue) {
+  var days = pfDaysUntilDate_(dateValue);
+  if (days == null) return null;
+  return days / 365.25;
+}
+
 function pfParseBool_(v, defaultValue) {
   if (v === true || v === false) return v;
   if (v == null || v === '') return defaultValue;
@@ -1692,6 +1718,17 @@ function pfApplyColumnMatrix_(sh, col, matrix, numRows) {
   range.setFontWeights(matrix.fontWeights);
 }
 
+function pfMapBondTcsRiskRaw_(text) {
+  var s = String(text || '').trim().toUpperCase();
+  if (!s) return '';
+
+  if (s.indexOf('RISK_LEVEL_LOW') !== -1 || s === 'LOW') return 'Low';
+  if (s.indexOf('RISK_LEVEL_MODERATE') !== -1 || s.indexOf('MODERATE') !== -1 || s === 'MEDIUM') return 'Medium';
+  if (s.indexOf('RISK_LEVEL_HIGH') !== -1 || s === 'HIGH') return 'High';
+
+  return '';
+}
+
 function pfSharesServiceKeyByHeader_(header) {
   if (header === PORTFOLIO_FORMATING_SHARES_SERVICE.quality) return 'quality';
   if (header === PORTFOLIO_FORMATING_SHARES_SERVICE.valuation) return 'valuation';
@@ -1713,6 +1750,12 @@ function pfBondServiceKeyByHeader_(header) {
 function pfIsZeroLike_(value) {
   if (value == null) return false;
   return Math.abs(Number(value) || 0) < 1e-9;
+}
+
+function pfIsUsableBondManualRisk_(value) {
+  if (value == null) return false;
+  if (pfIsZeroLike_(value)) return false;
+  return Number(value) > 0;
 }
 
 function pfIsMeaningfulQualityValue_(value) {
