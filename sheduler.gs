@@ -1,9 +1,27 @@
 /**
  * scheduler.gs
  * Еженедельные/ежемесячные задачи и установка/снятие триггеров.
- * Зависимости:
- * updateBondsFull(), updateFundsFull(), updateSharesFull(), updateOptionsFull(), buildBondsDashboard()/buildPortfolioDashboard()
- * sendDashboardChartsToTelegram_(aliases), sendDashboardStatsFromDashboard_(), tgSendMessage_(text)
+ *
+ * End-to-end pipeline:
+ * 1) preflight-check
+ * 2) greeting
+ * 3) sync Input
+ * 4) update Bonds / Funds / Shares / Options
+ * 5) post-processing formatting
+ * 6) build Dashboard
+ * 7) flush / stabilization
+ * 8) Telegram charts
+ * 9) Telegram stats
+ * 10) short service summary
+ *
+ * Публичный контракт сохраняется:
+ * - weeklyRefreshAndNotify()
+ * - installWeeklyAutoRefresh(hour)
+ * - removeWeeklyAutoRefreshTriggers()
+ * - monthlyAutoRefreshJob()
+ * - installMonthlyAutoRefresh(day, hour)
+ * - removeMonthlyAutoRefreshTriggers()
+ * - listProjectTriggers()
  */
 
 function _schedulerCreateSummary_(jobName) {
@@ -14,18 +32,57 @@ function _schedulerCreateSummary_(jobName) {
     currentStep: 'init',
     success: false,
     error: '',
+
     accountsCount: 0,
-    inputSynced: false,
-    inputSyncSkipped: false,
-    dashboardBuilt: false,
+
+    dependencies: {
+      inputSyncFn: '',
+      formattingFn: '',
+      dashboardFn: '',
+      tgMessage: false,
+      tgCharts: false,
+      tgStats: false
+    },
+
+    inputSync: {
+      attempted: false,
+      synced: false,
+      skipped: false,
+      reason: ''
+    },
+
+    updates: {
+      Bonds: false,
+      Funds: false,
+      Shares: false,
+      Options: false
+    },
+
+    formatting: {
+      attempted: false,
+      applied: false,
+      skipped: false,
+      reason: '',
+      result: null,
+      functionName: ''
+    },
+
+    dashboard: {
+      attempted: false,
+      built: false,
+      functionName: ''
+    },
+
     chartsSent: 0,
     statsSent: false,
+
     rowCounts: {
       Bonds: 0,
       Funds: 0,
       Shares: 0,
       Options: 0
     },
+
     warnings: [],
     steps: [],
     elapsedMs: 0
@@ -58,11 +115,6 @@ function _schedulerFormatDuration_(ms) {
   return min + ' мин ' + sec + ' сек';
 }
 
-function _schedulerBoolText_(value, skipped) {
-  if (skipped) return 'пропущено';
-  return value ? 'да' : 'нет';
-}
-
 function _schedulerCountSheetRows_(sheetName) {
   try {
     var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
@@ -85,37 +137,94 @@ function _schedulerAuditSheets_(summary) {
     dash = SpreadsheetApp.getActive().getSheetByName('Dashboard');
   } catch (e) {}
 
-  summary.dashboardBuilt = !!(dash && dash.getLastRow() > 0 && dash.getLastColumn() > 0);
+  summary.dashboard.built = !!(dash && dash.getLastRow() > 0 && dash.getLastColumn() > 0);
 
-  if (!summary.dashboardBuilt) {
+  if (!summary.dashboard.built) {
     _schedulerWarn_(summary, 'Dashboard отсутствует или пуст после сборки');
   }
 
   return summary.rowCounts;
 }
 
+function _schedulerResolveFunctionName_(candidates) {
+  var arr = candidates || [];
+  for (var i = 0; i < arr.length; i++) {
+    var name = arr[i];
+    if (!name) continue;
+    if (typeof globalThis[name] === 'function') return name;
+  }
+  return '';
+}
+
+function _schedulerInvokeByName_(fnName) {
+  var fn = fnName ? globalThis[fnName] : null;
+  if (typeof fn !== 'function') {
+    throw new Error('Функция не найдена: ' + fnName);
+  }
+  return fn();
+}
+
 function _schedulerBuildSummaryText_(summary) {
   var lines = [];
+
   lines.push('Service summary: ' + summary.jobName);
   lines.push('Статус: ' + (summary.success ? 'OK' : 'ERROR'));
-  if (summary.error) lines.push('Ошибка: ' + summary.error);
+
+  if (summary.error) {
+    lines.push('Ошибка: ' + summary.error);
+  }
+
   lines.push('Аккаунтов: ' + (summary.accountsCount || 0));
-  lines.push('Input sync: ' + _schedulerBoolText_(summary.inputSynced, summary.inputSyncSkipped));
-  lines.push('Dashboard: ' + _schedulerBoolText_(summary.dashboardBuilt, false));
+
+  if (summary.inputSync.synced) {
+    lines.push('Input sync: synced');
+  } else if (summary.inputSync.skipped) {
+    lines.push('Input sync: skipped' + (summary.inputSync.reason ? ' (' + summary.inputSync.reason + ')' : ''));
+  } else {
+    lines.push('Input sync: no');
+  }
+
+  lines.push(
+    'Updates: ' +
+    'Bonds ' + (summary.updates.Bonds ? 'OK' : '—') + ' | ' +
+    'Funds ' + (summary.updates.Funds ? 'OK' : '—') + ' | ' +
+    'Shares ' + (summary.updates.Shares ? 'OK' : '—') + ' | ' +
+    'Options ' + (summary.updates.Options ? 'OK' : '—')
+  );
+
+  if (summary.formatting.applied) {
+    lines.push('Formatting: applied');
+  } else if (summary.formatting.skipped) {
+    lines.push('Formatting: skipped' + (summary.formatting.reason ? ' (' + summary.formatting.reason + ')' : ''));
+  } else {
+    lines.push('Formatting: no');
+  }
+
+  lines.push(
+    'Dashboard: ' +
+    (summary.dashboard.built ? 'built' : 'not built') +
+    (summary.dashboard.functionName ? ' [' + summary.dashboard.functionName + ']' : '')
+  );
+
   lines.push(
     'Строки: Bonds ' + summary.rowCounts.Bonds +
     ' | Funds ' + summary.rowCounts.Funds +
     ' | Shares ' + summary.rowCounts.Shares +
     ' | Options ' + summary.rowCounts.Options
   );
+
+  lines.push('Telegram stats: ' + (summary.statsSent ? 'sent' : 'skipped'));
   lines.push('Графиков отправлено: ' + (summary.chartsSent || 0));
   lines.push('Warnings: ' + summary.warnings.length);
+
   if (summary.warnings.length) {
     summary.warnings.slice(0, 5).forEach(function(w) {
       lines.push('- ' + w);
     });
   }
+
   lines.push('Длительность: ' + _schedulerFormatDuration_(summary.elapsedMs));
+
   return lines.join('\n');
 }
 
@@ -145,7 +254,9 @@ function _schedulerRunStep_(summary, stepName, fn, isCritical) {
     Logger.log('[Scheduler] STEP ' + (isCritical ? 'ERROR' : 'WARN') + ': ' + msg);
     if (e && e.stack) Logger.log(e.stack);
 
-    if (isCritical) throw new Error(msg);
+    if (isCritical) {
+      throw new Error(msg);
+    }
 
     _schedulerWarn_(summary, msg);
     return null;
@@ -153,19 +264,27 @@ function _schedulerRunStep_(summary, stepName, fn, isCritical) {
 }
 
 function _schedulerPreflight_(summary) {
-  var missing = [];
+  var missingCritical = [];
 
-  if (typeof callUsersGetAccounts_ !== 'function') missing.push('callUsersGetAccounts_');
-  if (typeof updateBondsFull !== 'function') missing.push('updateBondsFull');
-  if (typeof updateFundsFull !== 'function') missing.push('updateFundsFull');
-  if (typeof updateSharesFull !== 'function') missing.push('updateSharesFull');
-  if (typeof updateOptionsFull !== 'function') missing.push('updateOptionsFull');
-  if (!(typeof buildPortfolioDashboard === 'function' || typeof buildBondsDashboard === 'function')) {
-    missing.push('buildPortfolioDashboard/buildBondsDashboard');
+  if (typeof callUsersGetAccounts_ !== 'function') missingCritical.push('callUsersGetAccounts_');
+  if (typeof updateBondsFull !== 'function') missingCritical.push('updateBondsFull');
+  if (typeof updateFundsFull !== 'function') missingCritical.push('updateFundsFull');
+  if (typeof updateSharesFull !== 'function') missingCritical.push('updateSharesFull');
+  if (typeof updateOptionsFull !== 'function') missingCritical.push('updateOptionsFull');
+
+  summary.dependencies.inputSyncFn = _schedulerResolveFunctionName_(['loadInputFigisAllTypes_']);
+  summary.dependencies.formattingFn = _schedulerResolveFunctionName_(['runPortfolioFormating_', 'runPortfolioFormating']);
+  summary.dependencies.dashboardFn = _schedulerResolveFunctionName_(['buildPortfolioDashboard', 'buildBondsDashboard']);
+  summary.dependencies.tgMessage = (typeof tgSendMessage_ === 'function');
+  summary.dependencies.tgCharts = (typeof sendDashboardChartsToTelegram_ === 'function');
+  summary.dependencies.tgStats = (typeof sendDashboardStatsFromDashboard_ === 'function');
+
+  if (!summary.dependencies.dashboardFn) {
+    missingCritical.push('buildPortfolioDashboard/buildBondsDashboard');
   }
 
-  if (missing.length) {
-    throw new Error('Отсутствуют критические функции: ' + missing.join(', '));
+  if (missingCritical.length) {
+    throw new Error('Отсутствуют критические функции: ' + missingCritical.join(', '));
   }
 
   var accounts;
@@ -181,16 +300,23 @@ function _schedulerPreflight_(summary) {
 
   summary.accountsCount = accounts.length;
 
-  if (typeof loadInputFigisAllTypes_ !== 'function') {
+  if (!summary.dependencies.inputSyncFn) {
     _schedulerWarn_(summary, 'loadInputFigisAllTypes_ не найдена — sync Input будет пропущен');
   }
-  if (typeof tgSendMessage_ !== 'function') {
+
+  if (!summary.dependencies.formattingFn) {
+    _schedulerWarn_(summary, 'runPortfolioFormating_/runPortfolioFormating не найдена — post-processing будет пропущен');
+  }
+
+  if (!summary.dependencies.tgMessage) {
     _schedulerWarn_(summary, 'tgSendMessage_ не найдена — сервисные Telegram-сообщения будут пропущены');
   }
-  if (typeof sendDashboardChartsToTelegram_ !== 'function') {
+
+  if (!summary.dependencies.tgCharts) {
     _schedulerWarn_(summary, 'sendDashboardChartsToTelegram_ не найдена — отправка графиков будет пропущена');
   }
-  if (typeof sendDashboardStatsFromDashboard_ !== 'function') {
+
+  if (!summary.dependencies.tgStats) {
     _schedulerWarn_(summary, 'sendDashboardStatsFromDashboard_ не найдена — отправка статистики будет пропущена');
   }
 }
@@ -199,10 +325,12 @@ function _schedulerRunPipeline_(opts) {
   opts = opts || {};
 
   var summary = _schedulerCreateSummary_(opts.jobName || 'pipeline');
-  var chartAliases = opts.chartAliases || ['sectors','coupons','maturity','history','risk','ytmVsCoupon','scatter'];
+  var chartAliases = opts.chartAliases || ['sectors', 'coupons', 'maturity', 'history', 'risk', 'ytmVsCoupon', 'scatter'];
+  var stabilizationMs = Number(opts.stabilizationMs);
+  if (!isFinite(stabilizationMs) || stabilizationMs < 0) stabilizationMs = 800;
 
   try {
-    _schedulerRunStep_(summary, 'preflight', function() {
+    _schedulerRunStep_(summary, 'preflight-check', function() {
       _schedulerPreflight_(summary);
     }, true);
 
@@ -210,69 +338,94 @@ function _schedulerRunPipeline_(opts) {
       _schedulerRunStep_(summary, 'greeting', function() {
         _schedulerSafeTelegram_(
           'Запускаю ' + summary.jobName +
-          ': sync Input → update sheets → rebuild Dashboard → audit → Telegram'
+          ': preflight → sync Input → update sheets → formatting → Dashboard → Telegram'
         );
       }, false);
     }
 
-    _schedulerRunStep_(summary, 'sync_input', function() {
-      if (typeof loadInputFigisAllTypes_ === 'function') {
-        loadInputFigisAllTypes_();
-        summary.inputSynced = true;
-        Utilities.sleep(800);
+    _schedulerRunStep_(summary, 'sync-input', function() {
+      summary.inputSync.attempted = true;
+
+      if (summary.dependencies.inputSyncFn) {
+        _schedulerInvokeByName_(summary.dependencies.inputSyncFn);
+        summary.inputSync.synced = true;
       } else {
-        summary.inputSyncSkipped = true;
+        summary.inputSync.skipped = true;
+        summary.inputSync.reason = 'function missing';
       }
     }, false);
 
-    _schedulerRunStep_(summary, 'update_bonds', function() {
+    _schedulerRunStep_(summary, 'update-bonds', function() {
       updateBondsFull();
-      Utilities.sleep(800);
+      summary.updates.Bonds = true;
     }, true);
 
-    _schedulerRunStep_(summary, 'update_funds', function() {
+    _schedulerRunStep_(summary, 'update-funds', function() {
       updateFundsFull();
-      Utilities.sleep(800);
+      summary.updates.Funds = true;
     }, true);
 
-    _schedulerRunStep_(summary, 'update_shares', function() {
+    _schedulerRunStep_(summary, 'update-shares', function() {
       updateSharesFull();
-      Utilities.sleep(800);
+      summary.updates.Shares = true;
     }, true);
 
-    _schedulerRunStep_(summary, 'update_options', function() {
+    _schedulerRunStep_(summary, 'update-options', function() {
       updateOptionsFull();
-      Utilities.sleep(800);
+      summary.updates.Options = true;
     }, true);
 
-    _schedulerRunStep_(summary, 'build_dashboard', function() {
-      if (typeof buildPortfolioDashboard === 'function') {
-        buildPortfolioDashboard();
-      } else {
-        buildBondsDashboard();
+    _schedulerRunStep_(summary, 'post-processing-formatting', function() {
+      summary.formatting.attempted = true;
+      summary.formatting.functionName = summary.dependencies.formattingFn || '';
+
+      if (!summary.dependencies.formattingFn) {
+        summary.formatting.skipped = true;
+        summary.formatting.reason = 'function missing';
+        return;
       }
-      SpreadsheetApp.flush();
-      Utilities.sleep(500);
+
+      var formattingResult = _schedulerInvokeByName_(summary.dependencies.formattingFn);
+      summary.formatting.result = formattingResult || null;
+
+      if (formattingResult && formattingResult.skipped) {
+        summary.formatting.skipped = true;
+        summary.formatting.reason = formattingResult.reason || 'formatting skipped by module';
+      } else {
+        summary.formatting.applied = true;
+      }
+    }, false);
+
+    _schedulerRunStep_(summary, 'build-dashboard', function() {
+      summary.dashboard.attempted = true;
+      summary.dashboard.functionName = summary.dependencies.dashboardFn || '';
+
+      _schedulerInvokeByName_(summary.dependencies.dashboardFn);
     }, true);
 
-    _schedulerRunStep_(summary, 'post_run_audit', function() {
+    _schedulerRunStep_(summary, 'flush-stabilization', function() {
+      SpreadsheetApp.flush();
+      Utilities.sleep(stabilizationMs);
+    }, true);
+
+    _schedulerRunStep_(summary, 'post-run-audit', function() {
       _schedulerAuditSheets_(summary);
-      if (!summary.dashboardBuilt) {
+      if (!summary.dashboard.built) {
         throw new Error('Dashboard не построен или пуст после обновления');
       }
     }, true);
 
     if (opts.sendCharts) {
-      _schedulerRunStep_(summary, 'send_charts', function() {
-        if (typeof sendDashboardChartsToTelegram_ === 'function') {
+      _schedulerRunStep_(summary, 'telegram-charts', function() {
+        if (summary.dependencies.tgCharts) {
           summary.chartsSent = Number(sendDashboardChartsToTelegram_(chartAliases)) || 0;
         }
       }, false);
     }
 
     if (opts.sendStats) {
-      _schedulerRunStep_(summary, 'send_stats', function() {
-        if (typeof sendDashboardStatsFromDashboard_ === 'function') {
+      _schedulerRunStep_(summary, 'telegram-stats', function() {
+        if (summary.dependencies.tgStats) {
           sendDashboardStatsFromDashboard_();
           summary.statsSent = true;
         }
@@ -283,7 +436,7 @@ function _schedulerRunPipeline_(opts) {
     summary.elapsedMs = Date.now() - summary.startedAtMs;
 
     if (opts.sendServiceSummary) {
-      _schedulerRunStep_(summary, 'send_service_summary', function() {
+      _schedulerRunStep_(summary, 'service-summary', function() {
         _schedulerSafeTelegram_(_schedulerBuildSummaryText_(summary));
       }, false);
     }
@@ -307,6 +460,7 @@ function _schedulerRunPipeline_(opts) {
       _schedulerSafeTelegram_(
         summary.jobName + ': ошибка на шаге "' + summary.currentStep + '"\n' + summary.error
       );
+
       if (opts.sendServiceSummary !== false) {
         _schedulerSafeTelegram_(_schedulerBuildSummaryText_(summary));
       }
@@ -325,7 +479,8 @@ function weeklyRefreshAndNotify() {
     sendStats: true,
     sendServiceSummary: true,
     notifyErrors: true,
-    chartAliases: ['sectors','coupons','maturity','history','risk','ytmVsCoupon','scatter']
+    chartAliases: ['sectors', 'coupons', 'maturity', 'history', 'risk', 'ytmVsCoupon', 'scatter'],
+    stabilizationMs: 1200
   });
 }
 
@@ -364,7 +519,8 @@ function monthlyAutoRefreshJob() {
     sendCharts: false,
     sendStats: false,
     sendServiceSummary: false,
-    notifyErrors: true
+    notifyErrors: true,
+    stabilizationMs: 1200
   });
 }
 
