@@ -8,66 +8,132 @@
 function onOpen(){
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Тинькофф • Портфель')
-
-    // ГЛАВНОЕ: Информация по FIGI
     .addItem('Информация по FIGI…', 'menuShowInstrumentInfoByFigi')
-    .addSeparator() 
-    // Блок: Облигации
-    .addSubMenu(
-      ui.createMenu('Облигации')
-        .addItem('Обновить только цены', 'menuUpdateBondPrices')   // читает FIGI из Input!A (Облигации)
-        .addItem('Полное обновление', 'menuFullUpdateBonds')        // читает FIGI из Input!A (Облигации)
-    )
-
-    // Блок: Фонды
-    .addSubMenu(
-      ui.createMenu('Фонды')
-        .addItem('Обновить только цены', 'menuUpdateFundPrices')   // читает FIGI из Input!B (Фонды)
-        .addItem('Полное обновление', 'menuFullUpdateFunds')
-    )
-
-    // Блок: Акции
-    .addSubMenu(
-      ui.createMenu('Акции')
-        .addItem('Обновить только цены', 'menuUpdateSharePrices')
-        .addItem('Полное обновление', 'menuFullUpdateShares')
-    )
-
-    // В onOpen():
-    .addSubMenu(
-      ui.createMenu('Опционы')
-        .addItem('Обновить только цены', 'menuUpdateOptionPrices')
-        .addItem('Полное обновление', 'menuFullUpdateOptions')
-    )
-
-    // Блок: Портфель / Аккаунт
-    .addSeparator() 
-    .addSubMenu(
-      ui.createMenu('Портфель')
-        .addItem('Проверка доступа', 'debugPortfolioAccess')
-        .addItem('Список аккаунтов', 'portfolioShowAccounts')
-        .addItem('Сводка активов', 'portfolioShowAllAssets')
-    )
-
-    // Блок: Данные
-    .addSubMenu(
-      ui.createMenu('Данные')
-        .addItem('Загрузить FIGI в Input (все типы)', 'menuLoadFigisAllTypes') // A: Облигации, B: Фонды, C: Акции, D: Опционы
-    )
-
-    // Блок: Сводка
-    .addSubMenu(
-      ui.createMenu('Сводка')
-        .addItem('Обновить Dashboard', 'menuBuildDashboard')
-    )
-
-    // Блок: Настройки
+    .addSeparator()
+    .addItem('Полный цикл обновления', 'menuRunFullRefreshCycle')
+    .addItem('Обновить данные портфеля', 'menuRefreshPortfolioData')
+    .addItem('Обновить форматирование', 'menuApplyPortfolioFormatting')
+    .addItem('Обновить Dashboard', 'menuBuildDashboard')
+    .addItem('Отправить в Telegram', 'menuSendTelegramReport')
+    .addSeparator()
     .addSubMenu(
       ui.createMenu('Настройки')
         .addItem('Задать/сменить токен', 'uiSetToken')
+        .addItem('Загрузить FIGI в Input (все типы)', 'menuLoadFigisAllTypes')
+        .addItem('Проверка доступа', 'menuSettingsDebugAccess')
+        .addItem('Список аккаунтов', 'menuSettingsShowAccounts')
+        .addItem('Сводка активов', 'menuSettingsShowAllAssets')
     )
-
     .addToUi();
+}
+
+function _uiResolveFunctionName_(candidates) {
+  var arr = candidates || [];
+  for (var i = 0; i < arr.length; i++) {
+    var name = arr[i];
+    if (!name) continue;
+    if (typeof globalThis[name] === 'function') return name;
+  }
+  return '';
+}
+
+function _uiInvokeByName_(fnName) {
+  var fn = fnName ? globalThis[fnName] : null;
+  if (typeof fn !== 'function') {
+    throw new Error('Функция не найдена: ' + fnName);
+  }
+  return fn();
+}
+
+function _uiSyncInputIfAvailable_() {
+  var fnName = _uiResolveFunctionName_(['loadInputFigisAllTypes_']);
+  if (!fnName) return false;
+  _uiInvokeByName_(fnName);
+  return true;
+}
+
+function _uiRunFormatting_() {
+  var fnName = _uiResolveFunctionName_(['runPortfolioFormating_', 'runPortfolioFormating']);
+  if (!fnName) {
+    throw new Error('Функция форматирования не найдена: runPortfolioFormating_ / runPortfolioFormating');
+  }
+  return _uiInvokeByName_(fnName);
+}
+
+function _uiBuildDashboard_() {
+  var fnName = _uiResolveFunctionName_(['buildPortfolioDashboard', 'buildBondsDashboard']);
+  if (!fnName) {
+    throw new Error('Не найдена функция сборки Dashboard');
+  }
+  return _uiInvokeByName_(fnName);
+}
+
+function _uiSendCurrentDashboardToTelegram_() {
+  if (typeof buildAndSendDashboardPackage === 'function') {
+    return buildAndSendDashboardPackage();
+  }
+
+  SpreadsheetApp.flush();
+  Utilities.sleep(800);
+
+  var sent = 0;
+
+  if (typeof sendDashboardStatsFromDashboard_ === 'function') {
+    sendDashboardStatsFromDashboard_();
+  }
+
+  if (typeof sendDashboardChartsToTelegram_ === 'function') {
+    sent = Number(sendDashboardChartsToTelegram_(['sectors','coupons','maturity','history','risk','ytmVsCoupon','scatter'])) || 0;
+  }
+
+  return sent;
+}
+
+function _uiShowAccountsFallback_() {
+  try {
+    if (typeof callUsersGetAccounts_ !== 'function') {
+      showPanel_('Список аккаунтов', '<div>Функция callUsersGetAccounts_ недоступна.</div>');
+      return;
+    }
+
+    var accs = callUsersGetAccounts_() || [];
+    if (!accs.length) {
+      showPanel_('Список аккаунтов', '<div>Аккаунты не найдены.</div>');
+      return;
+    }
+
+    var rows = accs.map(function(a) {
+      return [
+        String(a.accountId || ''),
+        String(a.name || ''),
+        String(a.type || a.accountType || ''),
+        String(a.status || '')
+      ];
+    });
+
+    var html =
+      '<div style="margin-bottom:8px">Аккаунтов: <b>' + rows.length + '</b></div>' +
+      '<table style="border-collapse:collapse;width:100%">' +
+      '<thead><tr>' +
+      '<th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f1f5f9">AccountId</th>' +
+      '<th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f1f5f9">Имя</th>' +
+      '<th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f1f5f9">Тип</th>' +
+      '<th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f1f5f9">Статус</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(function(r) {
+        return '<tr>' +
+          '<td style="padding:6px 8px;border:1px solid #eee">' + htmlEscape_(r[0]) + '</td>' +
+          '<td style="padding:6px 8px;border:1px solid #eee">' + htmlEscape_(r[1]) + '</td>' +
+          '<td style="padding:6px 8px;border:1px solid #eee">' + htmlEscape_(r[2]) + '</td>' +
+          '<td style="padding:6px 8px;border:1px solid #eee">' + htmlEscape_(r[3]) + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table>';
+
+    showPanel_('Список аккаунтов', html);
+  } catch (e) {
+    showPanel_('Список аккаунтов — ошибка', '<div>' + htmlEscape_(e && e.message) + '</div>');
+  }
 }
 
 /** Задание/смена токена (хранится в пользовательских свойствах) */
@@ -81,20 +147,114 @@ function uiSetToken(){
   showSnack_('Сохранено. Ключ TINKOFF_TOKEN (пользовательские свойства)','Токен',3000);
 }
 
-/** Меню → действия */
+/** Новые menu entrypoints */
+
+function menuRunFullRefreshCycle() {
+  try {
+    if (typeof weeklyRefreshAndNotify === 'function') {
+      weeklyRefreshAndNotify();
+      return;
+    }
+
+    menuRefreshPortfolioData();
+    menuApplyPortfolioFormatting();
+    menuBuildDashboard();
+    menuSendTelegramReport();
+  } catch (e) {
+    showPanel_('Полный цикл обновления — ошибка', '<div>' + htmlEscape_(e && e.message) + '</div>');
+  }
+}
+
+function menuRefreshPortfolioData() {
+  try {
+    setStatus_('Портфель • обновление данных…', 5);
+
+    var synced = false;
+    try {
+      synced = _uiSyncInputIfAvailable_();
+    } catch (e1) {
+      Logger.log('menuRefreshPortfolioData sync warning: ' + (e1 && e1.message || e1));
+    }
+
+    if (typeof updateBondsFull !== 'function') throw new Error('updateBondsFull не найдена');
+    if (typeof updateFundsFull !== 'function') throw new Error('updateFundsFull не найдена');
+    if (typeof updateSharesFull !== 'function') throw new Error('updateSharesFull не найдена');
+    if (typeof updateOptionsFull !== 'function') throw new Error('updateOptionsFull не найдена');
+
+    updateBondsFull();
+    updateFundsFull();
+    updateSharesFull();
+    updateOptionsFull();
+
+    SpreadsheetApp.flush();
+
+    showSnack_(
+      'Данные портфеля обновлены' + (synced ? ' + Input синхронизирован' : ''),
+      'Портфель',
+      2500
+    );
+  } catch (e) {
+    showPanel_('Обновить данные портфеля — ошибка', '<div>' + htmlEscape_(e && e.message) + '</div>');
+  }
+}
+
+function menuApplyPortfolioFormatting() {
+  try {
+    setStatus_('Портфель • форматирование…', 4);
+    var result = _uiRunFormatting_();
+
+    if (result && result.skipped) {
+      showSnack_('Форматирование пропущено' + (result.reason ? ': ' + result.reason : ''), 'Форматирование', 2500);
+    } else {
+      showSnack_('Форматирование обновлено', 'Форматирование', 2000);
+    }
+  } catch (e) {
+    showPanel_('Обновить форматирование — ошибка', '<div>' + htmlEscape_(e && e.message) + '</div>');
+  }
+}
+
+function menuSendTelegramReport() {
+  try {
+    setStatus_('Telegram • отправка…', 4);
+    var sent = _uiSendCurrentDashboardToTelegram_();
+    showSnack_('Отправка в Telegram выполнена' + (sent ? ' (графиков: ' + sent + ')' : ''), 'Telegram', 2500);
+  } catch (e) {
+    showPanel_('Отправить в Telegram — ошибка', '<div>' + htmlEscape_(e && e.message) + '</div>');
+  }
+}
+
+function menuSettingsDebugAccess() {
+  if (typeof debugPortfolioAccess === 'function') {
+    debugPortfolioAccess();
+    return;
+  }
+  showSnack_('Функция проверки доступа не найдена', 'Настройки', 2500);
+}
+
+function menuSettingsShowAccounts() {
+  if (typeof portfolioShowAccounts === 'function') {
+    portfolioShowAccounts();
+    return;
+  }
+  _uiShowAccountsFallback_();
+}
+
+function menuSettingsShowAllAssets() {
+  if (typeof portfolioShowAllAssets === 'function') {
+    portfolioShowAllAssets();
+    return;
+  }
+  showSnack_('Функция сводки активов не найдена', 'Настройки', 2500);
+}
+
+/** Старые menu helper functions оставлены для совместимости */
 function menuUpdateFundPrices(){ updateFundPricesOnly(); }
 function menuFullUpdateFunds(){  updateFundsFull(); }
 function menuUpdateBondPrices(){ updateBondPricesOnly(); }
 function menuFullUpdateBonds(){  updateBondsFull(); }
 function menuUpdateSharePrices(){ updateSharePricesOnly(); }
 function menuFullUpdateShares(){ updateSharesFull(); }
-function menuBuildDashboard(){
-  if (typeof buildPortfolioDashboard === 'function') {
-    buildPortfolioDashboard();
-  } else {
-    buildBondsDashboard();
-  }
-}
+function menuBuildDashboard(){ _uiBuildDashboard_(); }
 function menuFullUpdateOptions(){ updateOptionsFull(); }
 function menuUpdateOptionPrices(){ updateOptionPricesOnly(); }
 
@@ -111,12 +271,6 @@ function menuShowInstrumentInfoByFigi(){
   showInstrumentInfoByFigi(figi);
 }
 
-
-
-
-
-
-
 /** Показ плашки статуса (встроенное модальное окно Apps Script) */
 function setStatus_(title, autoCloseSec){
   try {
@@ -131,7 +285,6 @@ function setStatus_(title, autoCloseSec){
     Logger.log('setStatus_ skipped (no UI): ' + (e && e.message));
   }
 }
-
 
 /** Короткое уведомление через ту же плашку */
 function showSnack_(message, title, ms){
@@ -148,8 +301,8 @@ function showPanel_(title, html){
       '<div style="margin-top:10px;color:#6b7280;">Если панель мешает — закройте её крестиком.</div>' +
     '</div>'
   )
-  .setWidth(1280)   // ширина окна
-  .setHeight(820);  // высота окна
+  .setWidth(1280)
+  .setHeight(820);
 
   SpreadsheetApp.getUi().showModelessDialog(out, title);
 }
@@ -209,8 +362,6 @@ function debugPortfolioAccess(){
   }
 }
 
-
-
 /** Кэшированный маппинг UID -> FIGI (для опционов) */
 function figiFromUid_(uid){
   if(!uid) return null;
@@ -218,7 +369,7 @@ function figiFromUid_(uid){
   var c = cacheGet_(ck); if(c) return c === 'null' ? null : c;
   var inst = null;
   try {
-    inst = callInstrumentsOptionByUid_(uid); // InstrumentsService/OptionBy UID
+    inst = callInstrumentsOptionByUid_(uid);
   } catch(_) {}
   var figi = inst && inst.figi ? String(inst.figi) : null;
   cachePut_(ck, figi==null ? 'null' : figi, 12*3600);
@@ -228,7 +379,6 @@ function figiFromUid_(uid){
 /** Универсальные метаданные по id: сначала FIGI, потом UID (опционы) */
 function instrumentMetaByAnyId_(id){
   if(!id) return { class:'?', name:'', ticker:'' };
-  // если это uid:XXXX — вырежем префикс
   var isUid = String(id).startsWith('uid:');
   var figi = isUid ? figiFromUid_(String(id).slice(4)) : String(id);
 
@@ -243,12 +393,12 @@ function instrumentMetaByAnyId_(id){
   cachePut_(ck, JSON.stringify(out), 2*3600);
   return out;
 }
+
 function portfolioShowAllAssets(){
   try{
     var accs = callUsersGetAccounts_();
     if(!accs.length){ showPanel_('Все активы', '<div>Аккаунтов не найдено.</div>'); return; }
 
-    // ==== 1) Собираем сырые позиции (FIGI/UID + qty) по всем аккаунтам ====
     var raw = [];
     accs.forEach(function(a){
       [callPortfolioGetPortfolio_(a.accountId)||[], callPortfolioGetPositions_(a.accountId)||[]].forEach(function(lst){
@@ -264,19 +414,17 @@ function portfolioShowAllAssets(){
     });
     if(!raw.length){ showPanel_('Все активы', '<div>Позиции не найдены.</div>'); return; }
 
-    // ==== 2) Быстрый резолв UID -> FIGI для опционов ====
     var uidToFigi = {};
     var uidList = [];
     raw.forEach(function(r){
       if(!r.figi && r.uid && !uidToFigi[r.uid]) uidList.push(r.uid);
     });
     uidList.forEach(function(uid){
-      // кэш на 1 час, чтобы не дёргать API повторно
       var ck = 'uid2figi:'+uid;
-      var c  = cacheGet_(ck); 
+      var c  = cacheGet_(ck);
       if (c){ uidToFigi[uid] = c; return; }
       try{
-        var opt = callInstrumentsOptionByUid_(uid); // твоя обёртка (GetOptionBy/OptionBy)
+        var opt = callInstrumentsOptionByUid_(uid);
         if (opt && opt.figi){ uidToFigi[uid] = opt.figi; cachePut_(ck, opt.figi, 3600); }
       }catch(_){}
     });
@@ -284,7 +432,6 @@ function portfolioShowAllAssets(){
       if(!r.figi && r.uid && uidToFigi[r.uid]) r.figi = uidToFigi[r.uid];
     });
 
-    // ==== 3) Агрегация по счёту+инструменту (используем FIGI если есть, иначе помечаем uid:<UID>) ====
     var byKey = {};
     raw.forEach(function(r){
       var id = r.figi ? r.figi : ('uid:'+r.uid);
@@ -294,7 +441,6 @@ function portfolioShowAllAssets(){
     });
     var rowsRaw = Object.keys(byKey).map(function(k){ return byKey[k]; });
 
-    // ==== 4) Цены пачками (только по FIGI) ====
     var figis = rowsRaw.map(function(r){ return r.figi; }).filter(function(x){ return !!x; });
     var seenF = {}; figis = figis.filter(function(f){ if(seenF[f]) return false; seenF[f]=1; return true; });
     var priceMap = {};
@@ -307,20 +453,16 @@ function portfolioShowAllAssets(){
       }catch(_){}
     }
 
-    // ==== 5) Мини-метаданные инструмента (класс/имя/тикер/валюта) с локальным кэшем ====
     var metaCache = {};
-    function getMeta(id){ // id = FIGI или 'uid:...'
+    function getMeta(id){
       if (metaCache[id]) return metaCache[id];
       var out = { class:'?', name:'', ticker:'', currency:'' };
       var ck  = 'meta:'+id;
       var c   = cacheGet_(ck); if(c){ out = JSON.parse(c); metaCache[id]=out; return out; }
 
-      // FIGI?
       var figi = id.indexOf('uid:')===0 ? '' : id;
-      // UID?
       var uid  = id.indexOf('uid:')===0 ? id.slice(4) : '';
 
-      // Если это UID и это опцион — попробуем сразу вытащить описание опциона
       if (uid){
         try{
           var o = callInstrumentsOptionByUid_(uid);
@@ -328,7 +470,6 @@ function portfolioShowAllAssets(){
         }catch(_){}
       }
 
-      // Если FIGI — проверяем опцион, затем облигация/фонд/акция
       if (figi){
         try{ var o=callInstrumentsOptionByFigi_(figi); if(o){ out.class='option'; out.name=o.name||o.ticker||''; out.ticker=o.ticker||''; out.currency=o.currency||o.buyCurrency||o.sellCurrency||''; cachePut_(ck, JSON.stringify(out), 12*3600); metaCache[id]=out; return out; } }catch(_){}
         try{ var b=callInstrumentsBondByFigi_(figi);   if(b){ out.class='bond';   out.name=b.name||b.ticker||''; out.ticker=b.ticker||''; out.currency=b.currency||b.buyCurrency||b.sellCurrency||''; cachePut_(ck, JSON.stringify(out), 12*3600); metaCache[id]=out; return out; } }catch(_){}
@@ -341,7 +482,6 @@ function portfolioShowAllAssets(){
       return out;
     }
 
-    // ==== 6) Финальные строки для таблицы ====
     var rows = rowsRaw.map(function(r){
       var meta  = getMeta(r.figi ? r.figi : ('uid:'+r.uid));
       var price = r.figi ? priceMap[r.figi] : null;
@@ -368,7 +508,6 @@ function portfolioShowAllAssets(){
              (a.name||'').localeCompare(b.name||'');
     });
 
-    // ==== 7) Рендер ====
     var head = ['Счёт','Класс','Название','FIGI/UID','Кол-во','Цена','Стоимость'];
     var th = head.map(function(h){ return '<th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f1f5f9">'+htmlEscape_(h)+'</th>'; }).join('');
     var tr = rows.map(function(r){
@@ -386,26 +525,18 @@ function portfolioShowAllAssets(){
   }
 }
 
+// =============== Окно «Информация по FIGI» ===============
 
-
-
-// =============== Окно «Информация по FIGI» (вызов из main_menu) ===============
-
-/**
- * Основное окно с полной информацией по FIGI.
- * Вызывается из main_menu.gs → menuShowInstrumentInfoByFigi().
- */
 function showInstrumentInfoByFigi(figi){
   try {
     setStatus_('Чтение инструмента по FIGI…', 5);
 
-    // 1) Определяем тип инструмента
     var inst = null, kind = '';
     var probes = [
       {kind:'bond',   fn: callInstrumentsBondByFigi_},
       {kind:'etf',    fn: callInstrumentsEtfByFigi_},
       {kind:'share',  fn: callInstrumentsShareByFigi_},
-      {kind:'?',  fn: callInstrumentsShareByFigi_},
+      {kind:'?',      fn: callInstrumentsShareByFigi_},
       {kind:'option', fn: callInstrumentsOptionByFigi_}
     ];
     for (var i=0;i<probes.length;i++){
@@ -419,7 +550,6 @@ function showInstrumentInfoByFigi(figi){
       return;
     }
 
-    // 2) Маркет-данные
     var lastArr = [];
     try { lastArr = callMarketLastPrices_([figi]) || []; } catch(e){}
     var last = lastArr[0] || null;
@@ -432,14 +562,12 @@ function showInstrumentInfoByFigi(figi){
       if (ts) marketObj.tradingStatus = ts.tradingStatus || ts.status || null;
     } catch(e){}
 
-    // 3) Asset по UID (для ETF и пр.)
     var asset = null;
     var assetUid = inst.assetUid || inst.asset_uid || null;
     if (assetUid){
       try { asset = callInstrumentsGetAssetByUid_(assetUid) || null; } catch(e){}
     }
 
-    // 4) Ближ. купон для облигаций (если есть функция)
     var bondNextCoupon = null;
     if (kind === 'bond' && typeof fetchBondsNextCoupons_ === 'function'){
       try {
@@ -448,10 +576,8 @@ function showInstrumentInfoByFigi(figi){
       } catch(e){}
     }
 
-    // 5) Рендер
     var sections = [];
 
-    // 5.1 Сводка
     var summaryRows = [
       ['Тип инструмента', kind],
       ['FIGI', figi],
@@ -470,7 +596,6 @@ function showInstrumentInfoByFigi(figi){
     }
     sections.push('<h3 style="margin:16px 0 8px">Сводка</h3>' + _renderKVTable(summaryRows));
 
-    // 5.2 Полный дамп instrument/asset/market
     sections.push('<h3 style="margin:16px 0 8px">Instrument ('+kind+')</h3>' + _renderFlatTable(_flatten(inst, 'instrument')));
     if (asset) sections.push('<h3 style="margin:16px 0 8px">Asset</h3>' + _renderFlatTable(_flatten(asset, 'asset')));
     sections.push('<h3 style="margin:16px 0 8px">Market</h3>' + _renderFlatTable(_flatten(marketObj, 'market')));
