@@ -89,6 +89,11 @@ function tgIsAllowedChat_(chatId) {
 }
 
 // ===================== Telegram API =====================
+function doGet(e) {
+  return ContentService
+    .createTextOutput('Telegram webhook is active')
+    .setMimeType(ContentService.MimeType.TEXT);
+}
 
 function tgPost_(methodName, payload) {
   payload = payload || {};
@@ -316,6 +321,9 @@ function _deleteTriggersByHandler_(handlerName) {
 }
 
 // ===================== Webhook setup =====================
+function setupWebhookOnce() {
+  tgSetWebhookUrl_('https://script.google.com/macros/s/AKfycbx_ooxWozkNiznMVxBE4p-bclkBPER_a2t0t2fxSlvlhf8c6fR7CcDLxc5sKtAlrIf3/exec', true);
+}
 
 function tgSetWebhookUrl_(execUrl, dropPending) {
   if (!execUrl || !/\/exec$/.test(execUrl)) {
